@@ -232,6 +232,71 @@ If `route_id` is set, that SSH route must already be registered. For a DB on a
 new private network path, register the SSH route first with `ssh_register`, then
 call `db_register`.
 
+### Nested SSH To DB Example
+
+Routes can contain more than one SSH hop, and DB targets can use those routes.
+This supports private network paths such as:
+
+```text
+local Windows broker -> outer SSH -> inner SSH -> DB on inner host
+```
+
+Each hop uses its own credential alias, and the DB uses a separate credential
+alias. If all three secrets are missing, the first query opens native Windows
+password prompts in connection order:
+
+1. Outer SSH password.
+2. Inner SSH password.
+3. DB password.
+
+Only the local prompt sees the password text. The LLM sees route IDs, DB target
+IDs, redacted results, and `secret_visible_to_model: false`.
+
+Example non-secret setup:
+
+```powershell
+.\LlmPwManager.exe add-credential --alias outer-ssh-password --user outeruser --label "Outer SSH password" --confirm-local-management true
+.\LlmPwManager.exe add-ssh-target --id outer-ssh --host 203.0.113.10 --port 22 --user outeruser --credential outer-ssh-password --confirm-local-management true
+
+.\LlmPwManager.exe add-credential --alias inner-ssh-password --user inneruser --label "Inner SSH password" --confirm-local-management true
+.\LlmPwManager.exe add-ssh-target --id inner-ssh --host inner-host.private --port 22 --user inneruser --credential inner-ssh-password --confirm-local-management true
+
+.\LlmPwManager.exe add-route --id outer-inner-route --chain "outer-ssh,inner-ssh" --confirm-local-management true
+.\LlmPwManager.exe add-ssh-policy --id outer-inner-read --routes outer-inner-route --prefixes "whoami,hostname" --confirm-local-management true
+
+.\LlmPwManager.exe add-credential --alias inner-db-password --user dbuser --label "Inner DB password" --confirm-local-management true
+.\LlmPwManager.exe add-db-target --id inner-db --engine mysql --host 127.0.0.1 --port 3306 --database appdb --user dbuser --credential inner-db-password --route outer-inner-route --max-rows 10 --confirm-local-management true
+.\LlmPwManager.exe add-db-policy --id inner-db-read --connections inner-db --confirm-local-management true
+```
+
+Run the query through both SSH hops:
+
+```powershell
+.\LlmPwManager.exe db-query inner-db "select value from healthcheck where name = 'path'" --profile limited
+```
+
+This scenario was verified with Podman-backed test containers on WSL:
+
+```text
+Windows broker -> outer SSH -> inner SSH -> MariaDB on 127.0.0.1:3306
+```
+
+The successful broker response returned the DB value and kept all three
+credentials isolated:
+
+```json
+{
+  "ok": true,
+  "connection_id": "inner-db-through-two-ssh",
+  "rows": [
+    {
+      "value": "outer-inner-db-ok"
+    }
+  ],
+  "secret_visible_to_model": false
+}
+```
+
 For a browser login target:
 
 ```powershell
