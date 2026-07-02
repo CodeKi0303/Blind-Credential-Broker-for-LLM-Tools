@@ -10,6 +10,8 @@
     <SelfContained>true</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/CodeKi0303/Blind-Credential-Broker-for-LLM-Tools</RepositoryUrl>
   </PropertyGroup>
 
   <ItemGroup>

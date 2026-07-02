@@ -433,3 +433,10 @@ The LLM sees route IDs, session results, redacted stdout/stderr, and DB rows. It
 ## Browser Boundary
 
 The browser MVP is a login adapter, not a general browser automation API. It does not provide tools to read arbitrary page content, inspect password fields, export cookies, or run model-supplied JavaScript. Future browser expansion should keep that boundary: high-level broker-owned actions, isolated profiles, and no credential or session material returned to the LLM.
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
+
+Third-party runtime and test dependency license metadata is summarized in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
