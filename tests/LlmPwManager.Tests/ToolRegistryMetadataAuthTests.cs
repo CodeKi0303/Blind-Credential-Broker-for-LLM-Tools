@@ -66,6 +66,92 @@ public sealed class ToolRegistryMetadataAuthTests
     }
 
     [Fact]
+    public async Task SshRegisterRequiresAllowedTool()
+    {
+        var tools = CreateRegistry(["credential_status"]);
+
+        var result = await tools.CallAsync(JsonDocument.Parse("""
+            {
+              "name": "ssh_register",
+              "arguments": {
+                "route_id": "prod",
+                "host": "prod.example.com",
+                "user_name": "deploy",
+                "purpose": "register production ssh",
+                "client_profile": "restricted"
+              }
+            }
+            """).RootElement, CancellationToken.None);
+
+        var json = JsonSerializer.Serialize(result, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.Contains("\"isError\":true", json);
+        Assert.Contains("policy_denied", json);
+    }
+
+    [Fact]
+    public async Task SshRegisterPromptsApprovalAndReturnsSecretFreeResult()
+    {
+        var registration = new FakeSshRegistrationService();
+        var approval = new FakeApprovalPrompt(approve: true);
+        var tools = CreateRegistry(["ssh_register"], approvalPrompt: approval, sshRegistration: registration);
+
+        var result = await tools.CallAsync(JsonDocument.Parse("""
+            {
+              "name": "ssh_register",
+              "arguments": {
+                "route_id": "prod",
+                "host": "prod.example.com",
+                "port": 2222,
+                "user_name": "deploy",
+                "purpose": "register production ssh",
+                "command_prefixes": ["uptime"],
+                "client_profile": "restricted"
+              }
+            }
+            """).RootElement, CancellationToken.None);
+
+        var payload = ReadToolText(result);
+        var json = JsonSerializer.Serialize(result, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.Equal("registered", payload.GetProperty("status").GetString());
+        Assert.Equal("prod", payload.GetProperty("route_id").GetString());
+        Assert.False(payload.GetProperty("secret_visible_to_model").GetBoolean());
+        Assert.Equal(1, approval.Calls);
+        Assert.Equal("prod.example.com", registration.Requests.Single().Host);
+        Assert.Equal(2222, registration.Requests.Single().Port);
+        Assert.Contains("uptime", registration.Requests.Single().CommandPrefixes);
+        Assert.DoesNotContain("super-secret", json);
+    }
+
+    [Fact]
+    public async Task SshRegisterDoesNotCallRegistrationWhenUserDenies()
+    {
+        var registration = new FakeSshRegistrationService();
+        var approval = new FakeApprovalPrompt(approve: false);
+        var tools = CreateRegistry(["ssh_register"], approvalPrompt: approval, sshRegistration: registration);
+
+        var result = await tools.CallAsync(JsonDocument.Parse("""
+            {
+              "name": "ssh_register",
+              "arguments": {
+                "route_id": "prod",
+                "host": "prod.example.com",
+                "user_name": "deploy",
+                "purpose": "register production ssh",
+                "client_profile": "restricted"
+              }
+            }
+            """).RootElement, CancellationToken.None);
+
+        var json = JsonSerializer.Serialize(result, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.Contains("\"isError\":true", json);
+        Assert.Contains("user_denied", json);
+        Assert.Empty(registration.Requests);
+    }
+
+    [Fact]
     public async Task MetadataToolRejectsUnknownClientProfileBeforePolicyEvaluation()
     {
         var tools = CreateRegistry(["credential_status"]);
@@ -301,6 +387,53 @@ public sealed class ToolRegistryMetadataAuthTests
     }
 
     [Fact]
+    public async Task UnknownSshRouteSuggestsRegistrationWithoutEchoingRouteId()
+    {
+        var tools = CreateRegistryWithStore(["ssh_run"]).Tools;
+
+        var result = await tools.CallAsync(JsonDocument.Parse("""
+            {
+              "name": "ssh_run",
+              "arguments": {
+                "route_id": "password=super-secret",
+                "command": "uptime",
+                "purpose": "read status",
+                "client_profile": "restricted"
+              }
+            }
+            """).RootElement, CancellationToken.None);
+
+        var json = JsonSerializer.Serialize(result, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.Contains("ssh_route_not_registered", json);
+        Assert.Contains("ssh_register", json);
+        Assert.DoesNotContain("super-secret", json);
+    }
+
+    [Fact]
+    public async Task UnknownRouteTestSuggestsRegistrationWithoutPrompting()
+    {
+        var tools = CreateRegistryWithStore(["route_test"]).Tools;
+
+        var result = await tools.CallAsync(JsonDocument.Parse("""
+            {
+              "name": "route_test",
+              "arguments": {
+                "route_id": "password=super-secret",
+                "client_profile": "restricted"
+              }
+            }
+            """).RootElement, CancellationToken.None);
+
+        var payload = ReadToolText(result);
+        var json = JsonSerializer.Serialize(result, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.Equal("ssh_route_not_registered", payload.GetProperty("code").GetString());
+        Assert.True(payload.GetProperty("data").GetProperty("needs_user_registration").GetBoolean());
+        Assert.DoesNotContain("super-secret", json);
+    }
+
+    [Fact]
     public async Task ClosingMissingSessionDoesNotEchoRequestedSessionId()
     {
         using var sessions = CreateEmptySessionManager();
@@ -380,18 +513,24 @@ public sealed class ToolRegistryMetadataAuthTests
         Assert.DoesNotContain("hunter2", JsonSerializer.Serialize(entry, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
     }
 
-    private static ToolRegistry CreateRegistry(IReadOnlyList<string> allowedTools, bool includeSshPolicy = false)
+    private static ToolRegistry CreateRegistry(
+        IReadOnlyList<string> allowedTools,
+        bool includeSshPolicy = false,
+        IApprovalPrompt? approvalPrompt = null,
+        ISshRegistrationService? sshRegistration = null)
     {
-        return CreateRegistryWithStore(allowedTools, includeSshPolicy).Tools;
+        return CreateRegistryWithStore(allowedTools, includeSshPolicy, approvalPrompt: approvalPrompt, sshRegistration: sshRegistration).Tools;
     }
 
     private static (ToolRegistry Tools, FakeCredentialStore Store) CreateRegistryWithStore(
         IReadOnlyList<string> allowedTools,
         bool includeSshPolicy = false,
         IReadOnlyList<string>? existingAliases = null,
-        SshSessionManager? sshSessions = null)
+        SshSessionManager? sshSessions = null,
+        IApprovalPrompt? approvalPrompt = null,
+        ISshRegistrationService? sshRegistration = null)
     {
-        var (tools, store, _) = CreateRegistryWithAudit(allowedTools, includeSshPolicy, existingAliases, sshSessions);
+        var (tools, store, _) = CreateRegistryWithAudit(allowedTools, includeSshPolicy, existingAliases, sshSessions, approvalPrompt, sshRegistration);
         return (tools, store);
     }
 
@@ -399,7 +538,9 @@ public sealed class ToolRegistryMetadataAuthTests
         IReadOnlyList<string> allowedTools,
         bool includeSshPolicy = false,
         IReadOnlyList<string>? existingAliases = null,
-        SshSessionManager? sshSessions = null)
+        SshSessionManager? sshSessions = null,
+        IApprovalPrompt? approvalPrompt = null,
+        ISshRegistrationService? sshRegistration = null)
     {
         var config = new AppConfig
         {
@@ -446,7 +587,7 @@ public sealed class ToolRegistryMetadataAuthTests
         var tools = new ToolRegistry(
             config,
             new PolicyEvaluator(config),
-            null!,
+            approvalPrompt ?? new FakeApprovalPrompt(approve: true),
             new ApprovalCache(),
             audit,
             new AuditLogReader(auditPath),
@@ -456,7 +597,8 @@ public sealed class ToolRegistryMetadataAuthTests
             null!,
             null!,
             new ConfigSummary(config, store),
-            "restricted");
+            "restricted",
+            sshRegistration);
         return (tools, store, auditPath);
     }
 
@@ -492,6 +634,28 @@ public sealed class ToolRegistryMetadataAuthTests
     private sealed class FakeCredentialPrompt : ICredentialPrompt
     {
         public string? RequestPassword(string alias, string label, string userName, string reason) => null;
+    }
+
+    private sealed class FakeApprovalPrompt(bool approve) : IApprovalPrompt
+    {
+        public int Calls { get; private set; }
+
+        public bool Approve(string title, string target, string action, string reason)
+        {
+            Calls++;
+            return approve;
+        }
+    }
+
+    private sealed class FakeSshRegistrationService : ISshRegistrationService
+    {
+        public List<SshRegistrationRequest> Requests { get; } = [];
+
+        public Task<SshRegistrationResult> RegisterDirectPasswordAsync(SshRegistrationRequest request, CancellationToken cancellationToken)
+        {
+            Requests.Add(request);
+            return Task.FromResult(new SshRegistrationResult("registered", request.RouteId, request.RouteId, $"{request.RouteId}-password", true));
+        }
     }
 
     private static JsonElement ReadToolText(object result)

@@ -21,6 +21,7 @@ public sealed class AppConfigStoreTests
             Assert.All(config.ClientProfiles, profile =>
             {
                 Assert.Contains("ssh_open_session", profile.AllowedTools);
+                Assert.Contains("ssh_register", profile.AllowedTools);
                 Assert.Contains("session_list", profile.AllowedTools);
                 Assert.Contains("session_close", profile.AllowedTools);
                 Assert.Contains("browser_login", profile.AllowedTools);

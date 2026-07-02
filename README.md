@@ -12,6 +12,7 @@ Windows-only local password broker for LLM tool calling. The broker lets an LLM 
 - Client permission profiles independent of any specific LLM vendor.
 - High-level MCP tools only:
   - `ssh_run`
+  - `ssh_register`
   - `ssh_open_session`
   - `session_list`
   - `session_close`
@@ -90,7 +91,7 @@ Agents that cannot use MCP can call the same broker through CLI commands. Output
 .\LlmPwManager.exe audit-tail --limit 20 --profile limited
 .\LlmPwManager.exe mcp-config --format mcpServers --profile limited
 .\LlmPwManager.exe policy-check --tool ssh_run --route prod-route --command "systemctl status nginx --no-pager" --profile limited
-.\LlmPwManager.exe add-client-profile --id claude-desktop --permission limited --tools "ssh_run,ssh_open_session,session_list,session_close,db_query,browser_login,route_test,policy_check,credential_status,forget_credential,config_summary,audit_tail" --confirm-local-management true
+.\LlmPwManager.exe add-client-profile --id claude-desktop --permission limited --tools "ssh_run,ssh_register,ssh_open_session,session_list,session_close,db_query,browser_login,route_test,policy_check,credential_status,forget_credential,config_summary,audit_tail" --confirm-local-management true
 .\LlmPwManager.exe set-default-profile --id claude-desktop --confirm-local-management true
 .\LlmPwManager.exe set-session-timeout --minutes 15 --confirm-local-management true
 .\LlmPwManager.exe add-credential --alias prod-deploy --user deploy --label "Prod deploy password" --confirm-local-management true
@@ -168,6 +169,31 @@ To reset the sample config:
 .\LlmPwManager.exe validate-config
 .\LlmPwManager.exe route-test bastion --profile limited
 ```
+
+If an SSH address is not registered yet, an MCP client can call `ssh_register`
+instead of failing silently. The broker first shows a native Windows approval
+dialog with the requested host, port, user, and purpose. If the local user
+approves, the broker opens the native password prompt, tests the SSH login, and
+stores the password only after the test succeeds:
+
+```json
+{
+  "name": "ssh_register",
+  "arguments": {
+    "route_id": "prod-bastion",
+    "host": "prod.example.com",
+    "port": 22,
+    "user_name": "deploy",
+    "purpose": "register SSH access for deployment checks",
+    "command_prefixes": ["uptime", "df", "systemctl status"],
+    "client_profile": "limited"
+  }
+}
+```
+
+This creates a direct SSH target, route, credential alias, and limited SSH
+policy for the supplied command prefixes. The LLM sees only the resulting route
+metadata; it never sees the password.
 
 For a DB reachable through that SSH route:
 
@@ -362,7 +388,7 @@ LLM clients are configured with broker-side profiles, so the product is not tied
 - `approval`: asks with a Windows approval dialog when policy requires it.
 - `deny-by-default`: blocks everything except explicitly allowed behavior.
 
-Tool calling does not trigger user prompts by itself. Prompts appear only for missing/failed credentials or policy-required approval.
+Normal tool calls do not trigger user prompts by themselves. Prompts appear only for missing/failed credentials, policy-required approval, or the explicit `ssh_register` onboarding tool.
 
 To avoid unnecessary approval prompts or failed tool calls, clients can check policy without executing the operation:
 
@@ -379,8 +405,8 @@ When an approval-profile client approves the exact same profile/target/action/re
 Create a client-specific profile:
 
 ```powershell
-.\LlmPwManager.exe add-client-profile --id claude-desktop --permission limited --tools "ssh_run,ssh_open_session,session_list,session_close,db_query,browser_login,route_test,policy_check,credential_status,forget_credential,config_summary,audit_tail" --confirm-local-management true
-.\LlmPwManager.exe add-client-profile --id local-agent --permission approval --tools "ssh_run,ssh_open_session,session_list,session_close,db_query,browser_login,route_test,policy_check,credential_status,forget_credential,config_summary,audit_tail" --confirm-local-management true
+.\LlmPwManager.exe add-client-profile --id claude-desktop --permission limited --tools "ssh_run,ssh_register,ssh_open_session,session_list,session_close,db_query,browser_login,route_test,policy_check,credential_status,forget_credential,config_summary,audit_tail" --confirm-local-management true
+.\LlmPwManager.exe add-client-profile --id local-agent --permission approval --tools "ssh_run,ssh_register,ssh_open_session,session_list,session_close,db_query,browser_login,route_test,policy_check,credential_status,forget_credential,config_summary,audit_tail" --confirm-local-management true
 .\LlmPwManager.exe set-default-profile --id claude-desktop --confirm-local-management true
 ```
 

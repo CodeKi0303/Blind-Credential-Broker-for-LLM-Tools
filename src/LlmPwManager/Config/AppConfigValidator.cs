@@ -325,6 +325,7 @@ internal static class AppConfigValidator
     private static readonly HashSet<string> KnownTools = new(StringComparer.OrdinalIgnoreCase)
     {
         "ssh_run",
+        "ssh_register",
         "ssh_open_session",
         "session_list",
         "session_close",

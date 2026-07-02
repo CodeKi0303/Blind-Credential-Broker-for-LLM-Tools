@@ -24,7 +24,8 @@ internal sealed class ToolRegistry(
     DbExecutor db,
     IBrowserLoginExecutor browser,
     ConfigSummary summary,
-    string mcpClientProfile)
+    string mcpClientProfile,
+    ISshRegistrationService? sshRegistration = null)
 {
     public IReadOnlyList<object> ListTools()
     {
@@ -46,6 +47,30 @@ internal sealed class ToolRegistry(
                     client_profile = new { type = "string" }
                 },
                 required = new[] { "command", "purpose" }
+            }
+        },
+        new
+        {
+            name = "ssh_register",
+            description = "Ask the local user to approve and register a direct SSH target, then prompt for the SSH password and test it without exposing the password to the model.",
+            inputSchema = new
+            {
+                type = "object",
+                properties = new
+                {
+                    route_id = new { type = "string" },
+                    host = new { type = "string" },
+                    port = new { type = "integer", minimum = 1, maximum = 65535 },
+                    user_name = new { type = "string" },
+                    purpose = new { type = "string" },
+                    command_prefixes = new
+                    {
+                        type = "array",
+                        items = new { type = "string" }
+                    },
+                    client_profile = new { type = "string" }
+                },
+                required = new[] { "route_id", "host", "user_name", "purpose" }
             }
         },
         new
@@ -238,6 +263,7 @@ internal sealed class ToolRegistry(
             return name switch
             {
                 "ssh_run" => await SshRunAsync(args, cancellationToken),
+                "ssh_register" => await SshRegisterAsync(args, cancellationToken),
                 "ssh_open_session" => await SshOpenSessionAsync(args, cancellationToken),
                 "session_list" => SessionList(args),
                 "session_close" => SessionClose(args),
@@ -295,12 +321,80 @@ internal sealed class ToolRegistry(
         return args.ValueKind == JsonValueKind.Object;
     }
 
+    private async Task<object> SshRegisterAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        var routeId = ReadString(args, "route_id");
+        var host = ReadString(args, "host");
+        var port = ReadInt(args, "port", 22);
+        var userName = ReadString(args, "user_name");
+        var purpose = ReadString(args, "purpose");
+        var clientProfile = ReadClientProfile(args);
+        var commandPrefixes = ReadStringList(args, "command_prefixes", ["uptime", "whoami", "hostname"]);
+
+        if (!IsToolAllowedForProfile("ssh_register", clientProfile))
+        {
+            audit.Record("ssh_register", clientProfile, "ssh", "register SSH target", "denied", "tool is not allowed for this client profile");
+            return ToolError("policy_denied", new { reason = "tool is not allowed for this client profile", needsApproval = false });
+        }
+
+        if (sshRegistration is null)
+        {
+            audit.Record("ssh_register", clientProfile, "ssh", "register SSH target", "denied", "SSH registration is not available");
+            return ToolError("unsupported_operation", new { safe_message = "SSH registration is not available in this process." });
+        }
+
+        if (string.IsNullOrWhiteSpace(routeId) ||
+            string.IsNullOrWhiteSpace(host) ||
+            string.IsNullOrWhiteSpace(userName) ||
+            !ConfigIdentifier.IsValid(routeId))
+        {
+            return ToolError("invalid_request", new { safe_message = "SSH registration requires a valid route_id, host, and user_name." });
+        }
+
+        if (port is < 1 or > 65535)
+        {
+            return ToolError("invalid_request", new { safe_message = "SSH port must be between 1 and 65535." });
+        }
+
+        var target = $"{userName}@{host}:{port}";
+        var approved = approval.Approve(
+            "SSH target registration required",
+            target,
+            SafeAction(purpose),
+            "This SSH address is not registered. Approve only if you recognize it. The password prompt will stay local and the model will not see the password.");
+        if (!approved)
+        {
+            audit.Record("ssh_register", clientProfile, "ssh", "register SSH target", "denied", "user denied SSH target registration");
+            return ToolError("user_denied", new { safe_message = "The local user denied SSH target registration." });
+        }
+
+        var result = await sshRegistration.RegisterDirectPasswordAsync(
+            new SshRegistrationRequest(routeId, host, port, userName, purpose, commandPrefixes, clientProfile),
+            cancellationToken);
+
+        audit.Record("ssh_register", clientProfile, result.RouteId, "register SSH target", result.Status);
+        return ToolText(new
+        {
+            status = result.Status,
+            route_id = result.RouteId,
+            target_id = result.TargetId,
+            credential_alias = result.CredentialAlias,
+            prompt_shown = result.PromptShown,
+            secret_visible_to_model = false
+        });
+    }
+
     private async Task<object> SshRunAsync(JsonElement args, CancellationToken cancellationToken)
     {
         var routeId = ReadOptionalString(args, "route_id");
         var sessionId = ReadOptionalString(args, "session_id");
         var command = ReadString(args, "command");
         var clientProfile = ReadClientProfile(args);
+        if (!IsToolAllowedForProfile("ssh_run", clientProfile))
+        {
+            audit.Record("ssh_run", clientProfile, "ssh", SafeAction(command), "denied", "tool is not allowed for this client profile");
+            return ToolError("policy_denied", new { reason = "tool is not allowed for this client profile", needsApproval = false });
+        }
 
         if (!string.IsNullOrWhiteSpace(sessionId))
         {
@@ -316,6 +410,18 @@ internal sealed class ToolRegistry(
         if (string.IsNullOrWhiteSpace(routeId))
         {
             throw new InvalidOperationException("Missing required argument: route_id or session_id");
+        }
+
+        if (!IsConfiguredRoute(routeId))
+        {
+            audit.Record("ssh_run", clientProfile, "ssh", SafeAction(command), "denied", "SSH route is not registered");
+            return ToolError("ssh_route_not_registered", new
+            {
+                safe_message = "The requested SSH route is not registered. Ask the local user to approve ssh_register for this host before running SSH commands.",
+                suggested_tool = "ssh_register",
+                needs_user_registration = true,
+                secret_visible_to_model = false
+            });
         }
 
         var decision = policy.Evaluate(new ToolRequest("ssh_run", clientProfile, RouteId: routeId, Command: command));
@@ -347,8 +453,20 @@ internal sealed class ToolRegistry(
         var clientProfile = ReadClientProfile(args);
         if (!IsToolAllowedForProfile("ssh_open_session", clientProfile))
         {
-            audit.Record("ssh_open_session", clientProfile, routeId, SafeAction(purpose), "denied", "tool is not allowed for this client profile");
+            audit.Record("ssh_open_session", clientProfile, "ssh", SafeAction(purpose), "denied", "tool is not allowed for this client profile");
             return ToolError("policy_denied", new { reason = "tool is not allowed for this client profile", needsApproval = false });
+        }
+
+        if (!IsConfiguredRoute(routeId))
+        {
+            audit.Record("ssh_open_session", clientProfile, "ssh", SafeAction(purpose), "denied", "SSH route is not registered");
+            return ToolError("ssh_route_not_registered", new
+            {
+                safe_message = "The requested SSH route is not registered. Ask the local user to approve ssh_register for this host before opening an SSH session.",
+                suggested_tool = "ssh_register",
+                needs_user_registration = true,
+                secret_visible_to_model = false
+            });
         }
 
         var decision = policy.Evaluate(new ToolRequest("route_test", clientProfile, RouteId: routeId));
@@ -477,6 +595,24 @@ internal sealed class ToolRegistry(
     {
         var routeId = ReadString(args, "route_id");
         var clientProfile = ReadClientProfile(args);
+        if (!IsToolAllowedForProfile("route_test", clientProfile))
+        {
+            audit.Record("route_test", clientProfile, "ssh", "test route connectivity", "denied", "tool is not allowed for this client profile");
+            return ToolError("policy_denied", new { reason = "tool is not allowed for this client profile", needsApproval = false });
+        }
+
+        if (!IsConfiguredRoute(routeId))
+        {
+            audit.Record("route_test", clientProfile, "ssh", "test route connectivity", "denied", "SSH route is not registered");
+            return ToolError("ssh_route_not_registered", new
+            {
+                safe_message = "The requested SSH route is not registered. Ask the local user to approve ssh_register for this host before testing connectivity.",
+                suggested_tool = "ssh_register",
+                needs_user_registration = true,
+                secret_visible_to_model = false
+            });
+        }
+
         var decision = policy.Evaluate(new ToolRequest("route_test", clientProfile, RouteId: routeId));
         if (!EnsureAllowed(decision, clientProfile, "Route test approval required", routeId, "test route connectivity"))
         {
@@ -755,6 +891,45 @@ internal sealed class ToolRegistry(
         return defaultValue;
     }
 
+    private static IReadOnlyList<string> ReadStringList(JsonElement args, string name, IReadOnlyList<string> defaultValue)
+    {
+        if (args.ValueKind != JsonValueKind.Object ||
+            !args.TryGetProperty(name, out var value) ||
+            value.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+        {
+            return defaultValue;
+        }
+
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            return value.GetString()?
+                .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+                .ToList() ?? [];
+        }
+
+        if (value.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException($"{name} must be an array of strings.");
+        }
+
+        var items = new List<string>();
+        foreach (var item in value.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String)
+            {
+                throw new InvalidOperationException($"{name} must be an array of strings.");
+            }
+
+            var text = item.GetString();
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                items.Add(text.Trim());
+            }
+        }
+
+        return items;
+    }
+
     private PolicyDecision EvaluatePolicyCheck(JsonElement args, string requestedTool, string clientProfile)
     {
         if (!IsKnownTool(requestedTool))
@@ -812,7 +987,7 @@ internal sealed class ToolRegistry(
 
     private static bool IsKnownTool(string toolName)
     {
-        return toolName is "ssh_run" or "ssh_open_session" or "session_list" or "session_close" or
+        return toolName is "ssh_run" or "ssh_register" or "ssh_open_session" or "session_list" or "session_close" or
             "browser_login" or "db_query" or "route_test" or "policy_check" or
             "credential_status" or "forget_credential" or "config_summary" or "audit_tail";
     }
@@ -822,6 +997,9 @@ internal sealed class ToolRegistry(
 
     private bool IsConfiguredCredentialAlias(string alias) =>
         config.Credentials.Any(credential => credential.Alias.Equals(alias, StringComparison.OrdinalIgnoreCase));
+
+    private bool IsConfiguredRoute(string routeId) =>
+        config.Routes.Any(route => route.Id.Equals(routeId, StringComparison.OrdinalIgnoreCase));
 
     private bool EnsureAllowed(PolicyDecision decision, string clientProfile, string title, string target, string action)
     {

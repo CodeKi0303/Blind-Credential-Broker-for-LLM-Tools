@@ -51,8 +51,8 @@ internal static class AppConfigStore
         DefaultClientProfile = "limited",
         ClientProfiles =
         [
-            new() { Id = "full", Permission = PermissionProfile.Full, AllowedTools = ["ssh_run", "ssh_open_session", "session_list", "session_close", "db_query", "browser_login", "route_test", "policy_check", "credential_status", "forget_credential", "config_summary", "audit_tail"] },
-            new() { Id = "limited", Permission = PermissionProfile.Limited, AllowedTools = ["ssh_run", "ssh_open_session", "session_list", "session_close", "db_query", "browser_login", "route_test", "policy_check", "credential_status", "forget_credential", "config_summary", "audit_tail"] }
+            new() { Id = "full", Permission = PermissionProfile.Full, AllowedTools = ["ssh_run", "ssh_register", "ssh_open_session", "session_list", "session_close", "db_query", "browser_login", "route_test", "policy_check", "credential_status", "forget_credential", "config_summary", "audit_tail"] },
+            new() { Id = "limited", Permission = PermissionProfile.Limited, AllowedTools = ["ssh_run", "ssh_register", "ssh_open_session", "session_list", "session_close", "db_query", "browser_login", "route_test", "policy_check", "credential_status", "forget_credential", "config_summary", "audit_tail"] }
         ],
         Credentials =
         [
