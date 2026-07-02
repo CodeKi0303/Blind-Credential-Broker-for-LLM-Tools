@@ -81,6 +81,164 @@ The default output is a vendor-neutral stdio description:
 }
 ```
 
+### Codex Desktop / CLI
+
+Codex Desktop and the Codex CLI read MCP server settings from Codex
+`config.toml`. The default user-level file is:
+
+```text
+%USERPROFILE%\.codex\config.toml
+```
+
+Add the broker as a stdio MCP server:
+
+```toml
+[mcp_servers.llm_pw_manager]
+command = 'C:\path\to\LlmPwManager.exe'
+args = ["mcp"]
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+enabled = true
+
+[mcp_servers.llm_pw_manager.env]
+LLM_PW_MANAGER_HOME = 'C:\Users\you\AppData\Roaming\LlmPwManager'
+LLM_PW_MANAGER_CLIENT_PROFILE = "limited"
+```
+
+For this project after publishing, `command` should point at the generated
+single-file executable under:
+
+```text
+src\LlmPwManager\bin\Release\net10.0-windows\win-x64\publish\LlmPwManager.exe
+```
+
+User-level config is usually the best fit because the broker protects local
+Windows credentials and can be reused across repositories. Project-scoped
+`.codex\config.toml` also works for trusted projects when you want the broker
+available only in one repo.
+
+After editing the file, restart Codex Desktop or open a new thread so Codex
+loads the MCP server. In the Codex CLI/TUI, use `/mcp` to verify that
+`llm_pw_manager` is active.
+
+### Claude Desktop / Claude Code CLI
+
+Claude Desktop reads MCP servers from:
+
+```text
+%APPDATA%\Claude\claude_desktop_config.json
+```
+
+Merge the broker into the existing `mcpServers` object. Do not replace other
+servers already present in the file:
+
+```json
+{
+  "mcpServers": {
+    "llm-pw-manager": {
+      "command": "C:\\path\\to\\LlmPwManager.exe",
+      "args": ["mcp"],
+      "env": {
+        "LLM_PW_MANAGER_HOME": "C:\\Users\\you\\AppData\\Roaming\\LlmPwManager",
+        "LLM_PW_MANAGER_CLIENT_PROFILE": "limited"
+      }
+    }
+  }
+}
+```
+
+Restart Claude Desktop after editing the file.
+
+Claude Code CLI can register the same stdio MCP server without editing JSON:
+
+```powershell
+claude mcp add --transport stdio --scope user `
+  -e LLM_PW_MANAGER_HOME="$env:APPDATA\LlmPwManager" `
+  -e LLM_PW_MANAGER_CLIENT_PROFILE=limited `
+  llm-pw-manager -- "C:\path\to\LlmPwManager.exe" mcp
+```
+
+Check the registration:
+
+```powershell
+claude mcp list
+claude mcp get llm-pw-manager
+```
+
+Use `--scope project` instead of `--scope user` when the broker should be
+available only for the current project.
+
+### Antigravity Desktop / agy CLI
+
+Antigravity stores user MCP configuration under the Gemini/Antigravity config
+directory. For desktop-style Antigravity clients, use:
+
+```text
+%USERPROFILE%\.gemini\config\mcp_config.json
+```
+
+For the `agy` CLI, also mirror the same file to:
+
+```text
+%USERPROFILE%\.gemini\antigravity-cli\mcp_config.json
+```
+
+Use UTF-8 without BOM. A BOM can make some agy builds reject the JSON before
+the MCP server is discovered.
+
+```json
+{
+  "mcpServers": {
+    "llm-pw-manager": {
+      "command": "C:\\path\\to\\LlmPwManager.exe",
+      "args": ["mcp"],
+      "env": {
+        "LLM_PW_MANAGER_HOME": "C:\\Users\\you\\AppData\\Roaming\\LlmPwManager",
+        "LLM_PW_MANAGER_CLIENT_PROFILE": "limited"
+      },
+      "disabled": false,
+      "autoApprove": []
+    }
+  }
+}
+```
+
+The cleaner agy CLI path is to install the broker as an Antigravity plugin that
+contains `plugin.json` and `mcp_config.json`:
+
+```text
+llm-pw-manager-agy-plugin\
+  plugin.json
+  mcp_config.json
+```
+
+Minimal `plugin.json`:
+
+```json
+{
+  "name": "llm-pw-manager",
+  "version": "0.1.0",
+  "description": "Windows Credential Manager backed MCP broker for password-isolated LLM tools.",
+  "author": {
+    "name": "Your Name"
+  },
+  "license": "MIT",
+  "keywords": ["mcp", "credentials", "ssh", "db", "windows"]
+}
+```
+
+Install and verify:
+
+```powershell
+agy plugin validate C:\path\to\llm-pw-manager-agy-plugin
+agy plugin install C:\path\to\llm-pw-manager-agy-plugin
+agy plugin list
+```
+
+`agy plugin list` should show `llm-pw-manager` with `mcpServers` in its
+components. In interactive Antigravity/agy sessions, use `/mcp` to inspect
+loaded MCP servers.
+
 ## Run From CLI
 
 Agents that cannot use MCP can call the same broker through CLI commands. Output is JSON and secrets are never printed.
