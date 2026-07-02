@@ -25,7 +25,9 @@ internal sealed class ToolRegistry(
     IBrowserLoginExecutor browser,
     ConfigSummary summary,
     string mcpClientProfile,
-    ISshRegistrationService? sshRegistration = null)
+    ISshRegistrationService? sshRegistration = null,
+    IDbRegistrationService? dbRegistration = null,
+    IBrowserRegistrationService? browserRegistration = null)
 {
     public IReadOnlyList<object> ListTools()
     {
@@ -135,6 +137,31 @@ internal sealed class ToolRegistry(
         },
         new
         {
+            name = "browser_register",
+            description = "Ask the local user to approve and register a browser login target, then prompt for the password and verify login without exposing the password to the model.",
+            inputSchema = new
+            {
+                type = "object",
+                properties = new
+                {
+                    target_id = new { type = "string" },
+                    login_url = new { type = "string" },
+                    user_name = new { type = "string" },
+                    user_name_selector = new { type = "string" },
+                    password_selector = new { type = "string" },
+                    submit_selector = new { type = "string" },
+                    success_selector = new { type = "string" },
+                    success_url_contains = new { type = "string" },
+                    failure_selector = new { type = "string" },
+                    login_timeout_seconds = new { type = "integer", minimum = 5 },
+                    purpose = new { type = "string" },
+                    client_profile = new { type = "string" }
+                },
+                required = new[] { "target_id", "login_url", "user_name", "user_name_selector", "password_selector", "submit_selector", "purpose" }
+            }
+        },
+        new
+        {
             name = "db_query",
             description = "Run an approved SQL query through a configured DB connection and optional SSH route or SSH session.",
             inputSchema = new
@@ -150,6 +177,30 @@ internal sealed class ToolRegistry(
                     client_profile = new { type = "string" }
                 },
                 required = new[] { "connection_id", "sql", "purpose" }
+            }
+        },
+        new
+        {
+            name = "db_register",
+            description = "Ask the local user to approve and register a DB target, then prompt for the DB password and test the connection without exposing the password to the model.",
+            inputSchema = new
+            {
+                type = "object",
+                properties = new
+                {
+                    connection_id = new { type = "string" },
+                    engine = new { type = "string", @enum = new[] { "postgres", "mysql" } },
+                    host = new { type = "string" },
+                    port = new { type = "integer", minimum = 1, maximum = 65535 },
+                    database = new { type = "string" },
+                    user_name = new { type = "string" },
+                    route_id = new { type = "string" },
+                    max_rows = new { type = "integer", minimum = 1 },
+                    allow_write_sql = new { type = "boolean" },
+                    purpose = new { type = "string" },
+                    client_profile = new { type = "string" }
+                },
+                required = new[] { "connection_id", "engine", "host", "database", "user_name", "purpose" }
             }
         },
         new
@@ -268,7 +319,9 @@ internal sealed class ToolRegistry(
                 "session_list" => SessionList(args),
                 "session_close" => SessionClose(args),
                 "browser_login" => await BrowserLoginAsync(args, cancellationToken),
+                "browser_register" => await BrowserRegisterAsync(args, cancellationToken),
                 "db_query" => await DbQueryAsync(args, cancellationToken),
+                "db_register" => await DbRegisterAsync(args, cancellationToken),
                 "route_test" => await RouteTestAsync(args, cancellationToken),
                 "policy_check" => PolicyCheck(args),
                 "credential_status" => CredentialStatus(args),
@@ -498,6 +551,24 @@ internal sealed class ToolRegistry(
         var sql = ReadString(args, "sql");
         var parameters = ReadParameters(args);
         var clientProfile = ReadClientProfile(args);
+        if (!IsToolAllowedForProfile("db_query", clientProfile))
+        {
+            audit.Record("db_query", clientProfile, "db", SafeAction(sql), "denied", "tool is not allowed for this client profile");
+            return ToolError("policy_denied", new { reason = "tool is not allowed for this client profile", needsApproval = false });
+        }
+
+        if (!IsConfiguredDbTarget(connectionId))
+        {
+            audit.Record("db_query", clientProfile, "db", SafeAction(sql), "denied", "DB connection is not registered");
+            return ToolError("db_connection_not_registered", new
+            {
+                safe_message = "The requested DB connection is not registered. Ask the local user to approve db_register for this database before running queries.",
+                suggested_tool = "db_register",
+                needs_user_registration = true,
+                secret_visible_to_model = false
+            });
+        }
+
         var decision = policy.Evaluate(new ToolRequest("db_query", clientProfile, ConnectionId: connectionId, Sql: sql));
         if (!EnsureAllowed(decision, clientProfile, "DB query approval required", connectionId, sql))
         {
@@ -515,12 +586,8 @@ internal sealed class ToolRegistry(
             }
 
             sessionInfo = foundSession;
-            var target = config.DbTargets.FirstOrDefault(dbTarget =>
+            var target = config.DbTargets.Single(dbTarget =>
                 dbTarget.Id.Equals(connectionId, StringComparison.OrdinalIgnoreCase));
-            if (target is null)
-            {
-                throw new InvalidOperationException($"Unknown DB connection: {connectionId}");
-            }
 
             if (string.IsNullOrWhiteSpace(target.RouteId))
             {
@@ -557,6 +624,79 @@ internal sealed class ToolRegistry(
             truncated = result.Truncated,
             redacted_columns = result.RedactedColumns,
             secret_visible_to_model = false
+            });
+    }
+
+    private async Task<object> DbRegisterAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        var connectionId = ReadString(args, "connection_id");
+        var engine = ParseDbEngine(ReadString(args, "engine"));
+        var host = ReadString(args, "host");
+        var port = ReadInt(args, "port", DefaultDbPort(engine));
+        var database = ReadString(args, "database");
+        var userName = ReadString(args, "user_name");
+        var routeId = ReadOptionalString(args, "route_id");
+        var maxRows = ReadInt(args, "max_rows", 100);
+        var allowWriteSql = ReadBool(args, "allow_write_sql", false);
+        var purpose = ReadString(args, "purpose");
+        var clientProfile = ReadClientProfile(args);
+
+        if (!IsToolAllowedForProfile("db_register", clientProfile))
+        {
+            audit.Record("db_register", clientProfile, "db", "register DB target", "denied", "tool is not allowed for this client profile");
+            return ToolError("policy_denied", new { reason = "tool is not allowed for this client profile", needsApproval = false });
+        }
+
+        if (dbRegistration is null)
+        {
+            audit.Record("db_register", clientProfile, "db", "register DB target", "denied", "DB registration is not available");
+            return ToolError("unsupported_operation", new { safe_message = "DB registration is not available in this process." });
+        }
+
+        if (string.IsNullOrWhiteSpace(connectionId) ||
+            string.IsNullOrWhiteSpace(host) ||
+            string.IsNullOrWhiteSpace(database) ||
+            string.IsNullOrWhiteSpace(userName) ||
+            !ConfigIdentifier.IsValid(connectionId) ||
+            port is < 1 or > 65535 ||
+            maxRows < 1)
+        {
+            return ToolError("invalid_request", new { safe_message = "DB registration requires a valid connection_id, host, port, database, user_name, and max_rows." });
+        }
+
+        if (!string.IsNullOrWhiteSpace(routeId) && !IsConfiguredRoute(routeId))
+        {
+            return ToolError("ssh_route_not_registered", new
+            {
+                safe_message = "The requested DB SSH route is not registered. Register the SSH route first with ssh_register, then retry db_register.",
+                suggested_tool = "ssh_register",
+                needs_user_registration = true,
+                secret_visible_to_model = false
+            });
+        }
+
+        var approved = approval.Approve(
+            "DB target registration required",
+            $"{engine}://{userName}@{host}:{port}/{database}",
+            SafeAction(purpose),
+            "This DB connection is not registered. Approve only if you recognize it. The password prompt will stay local and the model will not see the password.");
+        if (!approved)
+        {
+            audit.Record("db_register", clientProfile, "db", "register DB target", "denied", "user denied DB target registration");
+            return ToolError("user_denied", new { safe_message = "The local user denied DB target registration." });
+        }
+
+        var result = await dbRegistration.RegisterAsync(
+            new DbRegistrationRequest(connectionId, engine, host, port, database, userName, routeId, maxRows, allowWriteSql, purpose, clientProfile),
+            cancellationToken);
+        audit.Record("db_register", clientProfile, result.ConnectionId, "register DB target", result.Status);
+        return ToolText(new
+        {
+            status = result.Status,
+            connection_id = result.ConnectionId,
+            credential_alias = result.CredentialAlias,
+            prompt_shown = result.PromptShown,
+            secret_visible_to_model = false
         });
     }
 
@@ -565,11 +705,24 @@ internal sealed class ToolRegistry(
         var targetId = ReadString(args, "target_id");
         var purpose = ReadString(args, "purpose");
         var clientProfile = ReadClientProfile(args);
+        if (!IsToolAllowedForProfile("browser_login", clientProfile))
+        {
+            audit.Record("browser_login", clientProfile, "browser", SafeAction(purpose), "denied", "tool is not allowed for this client profile");
+            return ToolError("policy_denied", new { reason = "tool is not allowed for this client profile", needsApproval = false });
+        }
+
         var target = config.BrowserTargets.FirstOrDefault(browserTarget =>
             browserTarget.Id.Equals(targetId, StringComparison.OrdinalIgnoreCase));
         if (target is null)
         {
-            throw new InvalidOperationException($"Unknown browser target: {targetId}");
+            audit.Record("browser_login", clientProfile, "browser", SafeAction(purpose), "denied", "browser target is not registered");
+            return ToolError("browser_target_not_registered", new
+            {
+                safe_message = "The requested browser login target is not registered. Ask the local user to approve browser_register before logging in.",
+                suggested_tool = "browser_register",
+                needs_user_registration = true,
+                secret_visible_to_model = false
+            });
         }
 
         var decision = policy.Evaluate(new ToolRequest("browser_login", clientProfile, BrowserTargetId: targetId));
@@ -586,6 +739,85 @@ internal sealed class ToolRegistry(
             {
                 target_id = targetId,
                 status = result.Status,
+                secret_visible_to_model = false
+            })
+            : ToolError(result.Status, new { safe_message = result.SafeMessage });
+    }
+
+    private async Task<object> BrowserRegisterAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        var targetId = ReadString(args, "target_id");
+        var loginUrl = ReadString(args, "login_url");
+        var userName = ReadString(args, "user_name");
+        var userNameSelector = ReadString(args, "user_name_selector");
+        var passwordSelector = ReadString(args, "password_selector");
+        var submitSelector = ReadString(args, "submit_selector");
+        var successSelector = ReadOptionalString(args, "success_selector");
+        var successUrlContains = ReadOptionalString(args, "success_url_contains");
+        var failureSelector = ReadOptionalString(args, "failure_selector");
+        var loginTimeoutSeconds = ReadInt(args, "login_timeout_seconds", 30);
+        var purpose = ReadString(args, "purpose");
+        var clientProfile = ReadClientProfile(args);
+
+        if (!IsToolAllowedForProfile("browser_register", clientProfile))
+        {
+            audit.Record("browser_register", clientProfile, "browser", "register browser target", "denied", "tool is not allowed for this client profile");
+            return ToolError("policy_denied", new { reason = "tool is not allowed for this client profile", needsApproval = false });
+        }
+
+        if (browserRegistration is null)
+        {
+            audit.Record("browser_register", clientProfile, "browser", "register browser target", "denied", "browser registration is not available");
+            return ToolError("unsupported_operation", new { safe_message = "Browser registration is not available in this process." });
+        }
+
+        if (string.IsNullOrWhiteSpace(targetId) ||
+            string.IsNullOrWhiteSpace(loginUrl) ||
+            string.IsNullOrWhiteSpace(userName) ||
+            string.IsNullOrWhiteSpace(userNameSelector) ||
+            string.IsNullOrWhiteSpace(passwordSelector) ||
+            string.IsNullOrWhiteSpace(submitSelector) ||
+            (string.IsNullOrWhiteSpace(successSelector) && string.IsNullOrWhiteSpace(successUrlContains)) ||
+            !ConfigIdentifier.IsValid(targetId) ||
+            loginTimeoutSeconds < 5)
+        {
+            return ToolError("invalid_request", new { safe_message = "Browser registration requires a valid target_id, login_url, selectors, success condition, user_name, and timeout." });
+        }
+
+        var approved = approval.Approve(
+            "Browser login registration required",
+            loginUrl,
+            SafeAction(purpose),
+            "This browser login target is not registered. Approve only if you recognize it. The password prompt will stay local and the model will not see the password.");
+        if (!approved)
+        {
+            audit.Record("browser_register", clientProfile, "browser", "register browser target", "denied", "user denied browser target registration");
+            return ToolError("user_denied", new { safe_message = "The local user denied browser target registration." });
+        }
+
+        var result = await browserRegistration.RegisterAsync(
+            new BrowserRegistrationRequest(
+                targetId,
+                loginUrl,
+                userName,
+                userNameSelector,
+                passwordSelector,
+                submitSelector,
+                successSelector,
+                successUrlContains,
+                failureSelector,
+                loginTimeoutSeconds,
+                purpose,
+                clientProfile),
+            cancellationToken);
+        audit.Record("browser_register", clientProfile, result.TargetId, "register browser target", result.Status, result.SafeMessage);
+        return result.Success
+            ? ToolText(new
+            {
+                status = result.Status,
+                target_id = result.TargetId,
+                credential_alias = result.CredentialAlias,
+                prompt_shown = result.PromptShown,
                 secret_visible_to_model = false
             })
             : ToolError(result.Status, new { safe_message = result.SafeMessage });
@@ -891,6 +1123,18 @@ internal sealed class ToolRegistry(
         return defaultValue;
     }
 
+    private static bool ReadBool(JsonElement args, string name, bool defaultValue)
+    {
+        if (args.ValueKind == JsonValueKind.Object &&
+            args.TryGetProperty(name, out var value) &&
+            value.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            return value.GetBoolean();
+        }
+
+        return defaultValue;
+    }
+
     private static IReadOnlyList<string> ReadStringList(JsonElement args, string name, IReadOnlyList<string> defaultValue)
     {
         if (args.ValueKind != JsonValueKind.Object ||
@@ -985,10 +1229,23 @@ internal sealed class ToolRegistry(
 
     private static string NormalizeToolName(string toolName) => toolName.Trim().ToLowerInvariant();
 
+    private static DbEngine ParseDbEngine(string value)
+    {
+        return value.Equals("postgres", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("postgresql", StringComparison.OrdinalIgnoreCase)
+            ? DbEngine.Postgres
+            : value.Equals("mysql", StringComparison.OrdinalIgnoreCase) ||
+              value.Equals("mariadb", StringComparison.OrdinalIgnoreCase)
+                ? DbEngine.MySql
+                : throw new InvalidOperationException("engine must be postgres or mysql.");
+    }
+
+    private static int DefaultDbPort(DbEngine engine) => engine == DbEngine.Postgres ? 5432 : 3306;
+
     private static bool IsKnownTool(string toolName)
     {
         return toolName is "ssh_run" or "ssh_register" or "ssh_open_session" or "session_list" or "session_close" or
-            "browser_login" or "db_query" or "route_test" or "policy_check" or
+            "browser_login" or "browser_register" or "db_query" or "db_register" or "route_test" or "policy_check" or
             "credential_status" or "forget_credential" or "config_summary" or "audit_tail";
     }
 
@@ -1000,6 +1257,12 @@ internal sealed class ToolRegistry(
 
     private bool IsConfiguredRoute(string routeId) =>
         config.Routes.Any(route => route.Id.Equals(routeId, StringComparison.OrdinalIgnoreCase));
+
+    private bool IsConfiguredDbTarget(string connectionId) =>
+        config.DbTargets.Any(target => target.Id.Equals(connectionId, StringComparison.OrdinalIgnoreCase));
+
+    private bool IsConfiguredBrowserTarget(string targetId) =>
+        config.BrowserTargets.Any(target => target.Id.Equals(targetId, StringComparison.OrdinalIgnoreCase));
 
     private bool EnsureAllowed(PolicyDecision decision, string clientProfile, string title, string target, string action)
     {

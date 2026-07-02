@@ -98,6 +98,8 @@ internal static class AppHost
         var browser = new ManagedEdgeBrowserLoginExecutor(config, resolver, appDirectory);
         var summary = new ConfigSummary(config, credentialStore);
         var sshRegistration = new SshRegistrationService(config, configPath, resolver);
+        var dbRegistration = new DbRegistrationService(config, configPath, db, resolver);
+        var browserRegistration = new BrowserRegistrationService(config, configPath, browser, resolver);
 
         if (args.Length == 0 || args[0].Equals("mcp", StringComparison.OrdinalIgnoreCase))
         {
@@ -112,7 +114,7 @@ internal static class AppHost
                 return 2;
             }
 
-            var tools = new ToolRegistry(config, policy, approvalPrompt, approvalCache, audit, auditReader, resolver, ssh, sshSessions, db, browser, summary, mcpClientProfile, sshRegistration);
+            var tools = new ToolRegistry(config, policy, approvalPrompt, approvalCache, audit, auditReader, resolver, ssh, sshSessions, db, browser, summary, mcpClientProfile, sshRegistration, dbRegistration, browserRegistration);
             await new McpServer(tools).RunAsync(Console.OpenStandardInput(), Console.OpenStandardOutput(), cancellationToken);
             return 0;
         }
@@ -462,7 +464,7 @@ internal static class AppHost
                         config,
                         Required(options, "id"),
                         ParsePermission(Optional(options, "permission") ?? "limited"),
-                        SplitCsv(Optional(options, "tools") ?? "ssh_run,ssh_register,ssh_open_session,session_list,session_close,db_query,browser_login,route_test,policy_check,credential_status,forget_credential,config_summary,audit_tail"));
+                        SplitCsv(Optional(options, "tools") ?? "ssh_run,ssh_register,ssh_open_session,session_list,session_close,db_query,db_register,browser_login,browser_register,route_test,policy_check,credential_status,forget_credential,config_summary,audit_tail"));
                     break;
 
                 case "set-default-profile":
@@ -928,7 +930,7 @@ internal static class AppHost
     private static bool IsKnownTool(string toolName)
     {
         return toolName is "ssh_run" or "ssh_register" or "ssh_open_session" or "session_list" or "session_close" or
-            "browser_login" or "db_query" or "route_test" or "policy_check" or
+            "browser_login" or "browser_register" or "db_query" or "db_register" or "route_test" or "policy_check" or
             "credential_status" or "forget_credential" or "config_summary" or "audit_tail";
     }
 

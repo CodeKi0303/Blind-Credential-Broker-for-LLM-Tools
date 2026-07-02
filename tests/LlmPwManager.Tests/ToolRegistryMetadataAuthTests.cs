@@ -1,7 +1,9 @@
 using System.Text.Json;
 using LlmPwManager.Audit;
+using LlmPwManager.Browser;
 using LlmPwManager.Config;
 using LlmPwManager.Credentials;
+using LlmPwManager.Db;
 using LlmPwManager.Mcp;
 using LlmPwManager.Policy;
 using LlmPwManager.Ssh;
@@ -149,6 +151,71 @@ public sealed class ToolRegistryMetadataAuthTests
         Assert.Contains("\"isError\":true", json);
         Assert.Contains("user_denied", json);
         Assert.Empty(registration.Requests);
+    }
+
+    [Fact]
+    public async Task DbRegisterPromptsApprovalAndReturnsSecretFreeResult()
+    {
+        var registration = new FakeDbRegistrationService();
+        var approval = new FakeApprovalPrompt(approve: true);
+        var tools = CreateRegistry(["db_register"], approvalPrompt: approval, dbRegistration: registration);
+
+        var result = await tools.CallAsync(JsonDocument.Parse("""
+            {
+              "name": "db_register",
+              "arguments": {
+                "connection_id": "payments",
+                "engine": "postgres",
+                "host": "db.example.com",
+                "database": "payments",
+                "user_name": "readonly",
+                "purpose": "register reporting db",
+                "client_profile": "restricted"
+              }
+            }
+            """).RootElement, CancellationToken.None);
+
+        var payload = ReadToolText(result);
+
+        Assert.Equal("registered", payload.GetProperty("status").GetString());
+        Assert.Equal("payments", payload.GetProperty("connection_id").GetString());
+        Assert.False(payload.GetProperty("secret_visible_to_model").GetBoolean());
+        Assert.Equal(1, approval.Calls);
+        Assert.Equal("db.example.com", registration.Requests.Single().Host);
+        Assert.Equal(DbEngine.Postgres, registration.Requests.Single().Engine);
+    }
+
+    [Fact]
+    public async Task BrowserRegisterPromptsApprovalAndReturnsSecretFreeResult()
+    {
+        var registration = new FakeBrowserRegistrationService();
+        var approval = new FakeApprovalPrompt(approve: true);
+        var tools = CreateRegistry(["browser_register"], approvalPrompt: approval, browserRegistration: registration);
+
+        var result = await tools.CallAsync(JsonDocument.Parse("""
+            {
+              "name": "browser_register",
+              "arguments": {
+                "target_id": "admin-console",
+                "login_url": "https://admin.example.com/login",
+                "user_name": "operator@example.com",
+                "user_name_selector": "#email",
+                "password_selector": "#password",
+                "submit_selector": "button[type=submit]",
+                "success_url_contains": "/dashboard",
+                "purpose": "register admin login",
+                "client_profile": "restricted"
+              }
+            }
+            """).RootElement, CancellationToken.None);
+
+        var payload = ReadToolText(result);
+
+        Assert.Equal("registered", payload.GetProperty("status").GetString());
+        Assert.Equal("admin-console", payload.GetProperty("target_id").GetString());
+        Assert.False(payload.GetProperty("secret_visible_to_model").GetBoolean());
+        Assert.Equal(1, approval.Calls);
+        Assert.Equal("https://admin.example.com/login", registration.Requests.Single().LoginUrl);
     }
 
     [Fact]
@@ -434,6 +501,53 @@ public sealed class ToolRegistryMetadataAuthTests
     }
 
     [Fact]
+    public async Task UnknownDbConnectionSuggestsRegistrationWithoutEchoingConnectionId()
+    {
+        var tools = CreateRegistryWithStore(["db_query"]).Tools;
+
+        var result = await tools.CallAsync(JsonDocument.Parse("""
+            {
+              "name": "db_query",
+              "arguments": {
+                "connection_id": "password=super-secret",
+                "sql": "select 1",
+                "purpose": "read db",
+                "client_profile": "restricted"
+              }
+            }
+            """).RootElement, CancellationToken.None);
+
+        var json = JsonSerializer.Serialize(result, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.Contains("db_connection_not_registered", json);
+        Assert.Contains("db_register", json);
+        Assert.DoesNotContain("super-secret", json);
+    }
+
+    [Fact]
+    public async Task UnknownBrowserTargetSuggestsRegistrationWithoutEchoingTargetId()
+    {
+        var tools = CreateRegistryWithStore(["browser_login"]).Tools;
+
+        var result = await tools.CallAsync(JsonDocument.Parse("""
+            {
+              "name": "browser_login",
+              "arguments": {
+                "target_id": "password=super-secret",
+                "purpose": "login",
+                "client_profile": "restricted"
+              }
+            }
+            """).RootElement, CancellationToken.None);
+
+        var json = JsonSerializer.Serialize(result, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.Contains("browser_target_not_registered", json);
+        Assert.Contains("browser_register", json);
+        Assert.DoesNotContain("super-secret", json);
+    }
+
+    [Fact]
     public async Task ClosingMissingSessionDoesNotEchoRequestedSessionId()
     {
         using var sessions = CreateEmptySessionManager();
@@ -517,9 +631,11 @@ public sealed class ToolRegistryMetadataAuthTests
         IReadOnlyList<string> allowedTools,
         bool includeSshPolicy = false,
         IApprovalPrompt? approvalPrompt = null,
-        ISshRegistrationService? sshRegistration = null)
+        ISshRegistrationService? sshRegistration = null,
+        IDbRegistrationService? dbRegistration = null,
+        IBrowserRegistrationService? browserRegistration = null)
     {
-        return CreateRegistryWithStore(allowedTools, includeSshPolicy, approvalPrompt: approvalPrompt, sshRegistration: sshRegistration).Tools;
+        return CreateRegistryWithStore(allowedTools, includeSshPolicy, approvalPrompt: approvalPrompt, sshRegistration: sshRegistration, dbRegistration: dbRegistration, browserRegistration: browserRegistration).Tools;
     }
 
     private static (ToolRegistry Tools, FakeCredentialStore Store) CreateRegistryWithStore(
@@ -528,9 +644,11 @@ public sealed class ToolRegistryMetadataAuthTests
         IReadOnlyList<string>? existingAliases = null,
         SshSessionManager? sshSessions = null,
         IApprovalPrompt? approvalPrompt = null,
-        ISshRegistrationService? sshRegistration = null)
+        ISshRegistrationService? sshRegistration = null,
+        IDbRegistrationService? dbRegistration = null,
+        IBrowserRegistrationService? browserRegistration = null)
     {
-        var (tools, store, _) = CreateRegistryWithAudit(allowedTools, includeSshPolicy, existingAliases, sshSessions, approvalPrompt, sshRegistration);
+        var (tools, store, _) = CreateRegistryWithAudit(allowedTools, includeSshPolicy, existingAliases, sshSessions, approvalPrompt, sshRegistration, dbRegistration, browserRegistration);
         return (tools, store);
     }
 
@@ -540,7 +658,9 @@ public sealed class ToolRegistryMetadataAuthTests
         IReadOnlyList<string>? existingAliases = null,
         SshSessionManager? sshSessions = null,
         IApprovalPrompt? approvalPrompt = null,
-        ISshRegistrationService? sshRegistration = null)
+        ISshRegistrationService? sshRegistration = null,
+        IDbRegistrationService? dbRegistration = null,
+        IBrowserRegistrationService? browserRegistration = null)
     {
         var config = new AppConfig
         {
@@ -598,7 +718,9 @@ public sealed class ToolRegistryMetadataAuthTests
             null!,
             new ConfigSummary(config, store),
             "restricted",
-            sshRegistration);
+            sshRegistration,
+            dbRegistration,
+            browserRegistration);
         return (tools, store, auditPath);
     }
 
@@ -655,6 +777,28 @@ public sealed class ToolRegistryMetadataAuthTests
         {
             Requests.Add(request);
             return Task.FromResult(new SshRegistrationResult("registered", request.RouteId, request.RouteId, $"{request.RouteId}-password", true));
+        }
+    }
+
+    private sealed class FakeDbRegistrationService : IDbRegistrationService
+    {
+        public List<DbRegistrationRequest> Requests { get; } = [];
+
+        public Task<DbRegistrationResult> RegisterAsync(DbRegistrationRequest request, CancellationToken cancellationToken)
+        {
+            Requests.Add(request);
+            return Task.FromResult(new DbRegistrationResult("registered", request.ConnectionId, $"{request.ConnectionId}-password", true));
+        }
+    }
+
+    private sealed class FakeBrowserRegistrationService : IBrowserRegistrationService
+    {
+        public List<BrowserRegistrationRequest> Requests { get; } = [];
+
+        public Task<BrowserRegistrationResult> RegisterAsync(BrowserRegistrationRequest request, CancellationToken cancellationToken)
+        {
+            Requests.Add(request);
+            return Task.FromResult(new BrowserRegistrationResult(true, "registered", request.TargetId, $"{request.TargetId}-password", true));
         }
     }
 

@@ -17,7 +17,9 @@ Windows-only local password broker for LLM tool calling. The broker lets an LLM 
   - `session_list`
   - `session_close`
   - `db_query`
+  - `db_register`
   - `browser_login`
+  - `browser_register`
   - `route_test`
   - `policy_check`
   - `credential_status`
@@ -91,7 +93,7 @@ Agents that cannot use MCP can call the same broker through CLI commands. Output
 .\LlmPwManager.exe audit-tail --limit 20 --profile limited
 .\LlmPwManager.exe mcp-config --format mcpServers --profile limited
 .\LlmPwManager.exe policy-check --tool ssh_run --route prod-route --command "systemctl status nginx --no-pager" --profile limited
-.\LlmPwManager.exe add-client-profile --id claude-desktop --permission limited --tools "ssh_run,ssh_register,ssh_open_session,session_list,session_close,db_query,browser_login,route_test,policy_check,credential_status,forget_credential,config_summary,audit_tail" --confirm-local-management true
+.\LlmPwManager.exe add-client-profile --id claude-desktop --permission limited --tools "ssh_run,ssh_register,ssh_open_session,session_list,session_close,db_query,db_register,browser_login,browser_register,route_test,policy_check,credential_status,forget_credential,config_summary,audit_tail" --confirm-local-management true
 .\LlmPwManager.exe set-default-profile --id claude-desktop --confirm-local-management true
 .\LlmPwManager.exe set-session-timeout --minutes 15 --confirm-local-management true
 .\LlmPwManager.exe add-credential --alias prod-deploy --user deploy --label "Prod deploy password" --confirm-local-management true
@@ -204,6 +206,32 @@ For a DB reachable through that SSH route:
 .\LlmPwManager.exe db-query payments-db-via-bastion "select count(*) from payment_logs" --profile limited
 ```
 
+If a DB connection is not registered yet, an MCP client can call `db_register`.
+The broker shows a native approval dialog, asks for the DB password locally,
+tests the connection with `select 1`, and stores the password only after the
+test succeeds:
+
+```json
+{
+  "name": "db_register",
+  "arguments": {
+    "connection_id": "payments-db",
+    "engine": "postgres",
+    "host": "10.30.0.20",
+    "port": 5432,
+    "database": "payments",
+    "user_name": "readonly",
+    "route_id": "bastion",
+    "purpose": "register readonly payments DB access",
+    "client_profile": "limited"
+  }
+}
+```
+
+If `route_id` is set, that SSH route must already be registered. For a DB on a
+new private network path, register the SSH route first with `ssh_register`, then
+call `db_register`.
+
 For a browser login target:
 
 ```powershell
@@ -211,6 +239,29 @@ For a browser login target:
 .\LlmPwManager.exe add-browser-target --id admin-console --url https://admin.example.com/login --user operator@example.com --credential admin-console-password --user-selector "#email" --password-selector "#password" --submit-selector "button[type=submit]" --success-url-contains "/dashboard" --failure-selector ".login-error" --confirm-local-management true
 .\LlmPwManager.exe add-browser-policy --id login-admin-console --targets admin-console --confirm-local-management true
 .\LlmPwManager.exe browser-login admin-console --profile limited
+```
+
+If a browser login target is not registered yet, an MCP client can call
+`browser_register`. The broker shows a native approval dialog, opens an isolated
+Edge profile, asks for the password locally, fills only the configured selectors,
+and stores the password only after the success condition is observed:
+
+```json
+{
+  "name": "browser_register",
+  "arguments": {
+    "target_id": "admin-console",
+    "login_url": "https://admin.example.com/login",
+    "user_name": "operator@example.com",
+    "user_name_selector": "#email",
+    "password_selector": "#password",
+    "submit_selector": "button[type=submit]",
+    "success_url_contains": "/dashboard",
+    "failure_selector": ".login-error",
+    "purpose": "register admin console login",
+    "client_profile": "limited"
+  }
+}
 ```
 
 ### SSH Auth Modes
@@ -388,7 +439,7 @@ LLM clients are configured with broker-side profiles, so the product is not tied
 - `approval`: asks with a Windows approval dialog when policy requires it.
 - `deny-by-default`: blocks everything except explicitly allowed behavior.
 
-Normal tool calls do not trigger user prompts by themselves. Prompts appear only for missing/failed credentials, policy-required approval, or the explicit `ssh_register` onboarding tool.
+Normal tool calls do not trigger user prompts by themselves. Prompts appear only for missing/failed credentials, policy-required approval, or explicit onboarding tools such as `ssh_register`, `db_register`, and `browser_register`.
 
 To avoid unnecessary approval prompts or failed tool calls, clients can check policy without executing the operation:
 
@@ -405,8 +456,8 @@ When an approval-profile client approves the exact same profile/target/action/re
 Create a client-specific profile:
 
 ```powershell
-.\LlmPwManager.exe add-client-profile --id claude-desktop --permission limited --tools "ssh_run,ssh_register,ssh_open_session,session_list,session_close,db_query,browser_login,route_test,policy_check,credential_status,forget_credential,config_summary,audit_tail" --confirm-local-management true
-.\LlmPwManager.exe add-client-profile --id local-agent --permission approval --tools "ssh_run,ssh_register,ssh_open_session,session_list,session_close,db_query,browser_login,route_test,policy_check,credential_status,forget_credential,config_summary,audit_tail" --confirm-local-management true
+.\LlmPwManager.exe add-client-profile --id claude-desktop --permission limited --tools "ssh_run,ssh_register,ssh_open_session,session_list,session_close,db_query,db_register,browser_login,browser_register,route_test,policy_check,credential_status,forget_credential,config_summary,audit_tail" --confirm-local-management true
+.\LlmPwManager.exe add-client-profile --id local-agent --permission approval --tools "ssh_run,ssh_register,ssh_open_session,session_list,session_close,db_query,db_register,browser_login,browser_register,route_test,policy_check,credential_status,forget_credential,config_summary,audit_tail" --confirm-local-management true
 .\LlmPwManager.exe set-default-profile --id claude-desktop --confirm-local-management true
 ```
 

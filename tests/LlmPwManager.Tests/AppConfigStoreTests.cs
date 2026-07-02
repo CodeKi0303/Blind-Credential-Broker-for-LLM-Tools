@@ -24,7 +24,9 @@ public sealed class AppConfigStoreTests
                 Assert.Contains("ssh_register", profile.AllowedTools);
                 Assert.Contains("session_list", profile.AllowedTools);
                 Assert.Contains("session_close", profile.AllowedTools);
+                Assert.Contains("db_register", profile.AllowedTools);
                 Assert.Contains("browser_login", profile.AllowedTools);
+                Assert.Contains("browser_register", profile.AllowedTools);
                 Assert.Contains("policy_check", profile.AllowedTools);
             });
         }
