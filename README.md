@@ -269,6 +269,10 @@ The CLI uses the same Credential Manager, password prompt, policy checks, approv
 
 Reusable SSH sessions are MCP-only because they live inside the running broker process. CLI calls are one-shot commands.
 
+Multiple MCP clients can point at the same `LlmPwManager.exe` and the same `LLM_PW_MANAGER_HOME`. Config writes and audit log appends are serialized with a cross-process lock, and config saves are written atomically so concurrent registration or local management commands do not overwrite each other's changes. A long-running MCP server also refreshes from the latest config before completing SSH, DB, or browser registration, so a target registered by another client is treated as already configured instead of prompting again.
+
+Broker-held SSH `session_id` values are still process-local. Codex, Claude, Antigravity, and CLI commands can share the same non-secret config, audit log, and Windows Credential Manager entries, but an SSH session opened by one MCP server process cannot be reused by another MCP server process.
+
 `status` and `list` print a profile-scoped config summary when the selected profile allows `config_summary`. `full` profiles receive detailed non-secret management metadata. Non-full profiles receive a minimal summary: allowed tools, credential status counts, route IDs with hop counts, DB target IDs, browser target IDs, and policy count. Minimal summaries intentionally hide SSH hosts, user names, credential aliases, route chains, browser selectors, login URLs, and policy command prefixes. `validate-config` reports config errors as JSON and can be used before connecting an LLM client. It also catches misspelled tool names in client profiles and policy rules, duplicate policy IDs, and references to unknown routes, targets, or credential aliases.
 
 `doctor` prints a secret-free readiness report. It validates config, reports credential aliases as `registered` or `missing`, checks limited-profile policy coverage for SSH/DB/browser targets, checks whether Microsoft Edge is available for managed browser targets, includes generated MCP stdio config, and shows config/audit paths.

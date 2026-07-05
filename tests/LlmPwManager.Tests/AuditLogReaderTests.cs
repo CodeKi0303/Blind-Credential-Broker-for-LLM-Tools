@@ -88,6 +88,33 @@ public sealed class AuditLogReaderTests
     }
 
     [Fact]
+    public async Task ConcurrentLoggerWritesPreserveAllEntries()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "llm-pw-audit-" + Guid.NewGuid().ToString("N") + ".jsonl");
+        using var start = new ManualResetEventSlim(false);
+        var tasks = Enumerable.Range(1, 80)
+            .Select(index => Task.Run(() =>
+            {
+                start.Wait();
+                new AuditLogger(path).Record("policy_check", "limited", $"target-{index}", $"action-{index}", "ok");
+            }))
+            .ToArray();
+
+        start.Set();
+        await Task.WhenAll(tasks);
+
+        var lines = File.ReadAllLines(path);
+        var entries = new AuditLogReader(path).Tail(100);
+
+        Assert.Equal(80, lines.Length);
+        Assert.Equal(80, entries.Count);
+        for (var index = 1; index <= 80; index++)
+        {
+            Assert.Contains(entries, entry => entry.Target == $"target-{index}");
+        }
+    }
+
+    [Fact]
     public void MissingAuditFileReturnsEmptyList()
     {
         var path = Path.Combine(Path.GetTempPath(), "llm-pw-audit-missing-" + Guid.NewGuid().ToString("N") + ".jsonl");

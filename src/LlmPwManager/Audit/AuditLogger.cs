@@ -1,4 +1,5 @@
 using System.Text.Json;
+using LlmPwManager.IO;
 
 namespace LlmPwManager.Audit;
 
@@ -21,7 +22,10 @@ internal sealed class AuditLogger(string path)
         lock (gate)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            File.AppendAllText(path, line + Environment.NewLine);
+            using var fileLock = CrossProcessFileLock.Acquire(path);
+            using var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read);
+            using var writer = new StreamWriter(stream);
+            writer.WriteLine(line);
         }
     }
 }

@@ -69,7 +69,7 @@ internal static class AppHost
 
         if (args.Length > 0 && IsConfigMutationCommand(args[0]))
         {
-            return RunConfigMutation(configPath, config, args);
+            return RunConfigMutation(configPath, args);
         }
 
         var credentialStore = new WindowsCredentialStore("llm-pw-manager");
@@ -440,7 +440,7 @@ internal static class AppHost
             command.Equals("add-browser-policy", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static int RunConfigMutation(string configPath, AppConfig config, string[] args)
+    private static int RunConfigMutation(string configPath, string[] args)
     {
         try
         {
@@ -457,120 +457,125 @@ internal static class AppHost
                 return 3;
             }
 
-            switch (command)
+            AppConfigStore.Update(configPath, config =>
             {
-                case "add-client-profile":
-                    ConfigMutator.AddClientProfile(
-                        config,
-                        Required(options, "id"),
-                        ParsePermission(Optional(options, "permission") ?? "limited"),
-                        SplitCsv(Optional(options, "tools") ?? "ssh_run,ssh_register,ssh_open_session,session_list,session_close,db_query,db_register,browser_login,browser_register,route_test,policy_check,credential_status,forget_credential,config_summary,audit_tail"));
-                    break;
+                switch (command)
+                {
+                    case "add-client-profile":
+                        ConfigMutator.AddClientProfile(
+                            config,
+                            Required(options, "id"),
+                            ParsePermission(Optional(options, "permission") ?? "limited"),
+                            SplitCsv(Optional(options, "tools") ?? "ssh_run,ssh_register,ssh_open_session,session_list,session_close,db_query,db_register,browser_login,browser_register,route_test,policy_check,credential_status,forget_credential,config_summary,audit_tail"));
+                        break;
 
-                case "set-default-profile":
-                    ConfigMutator.SetDefaultProfile(config, Required(options, "id"));
-                    break;
+                    case "set-default-profile":
+                        ConfigMutator.SetDefaultProfile(config, Required(options, "id"));
+                        break;
 
-                case "set-session-timeout":
-                    ConfigMutator.SetSessionIdleTimeout(config, OptionalInt(options, "minutes", 30));
-                    break;
+                    case "set-session-timeout":
+                        ConfigMutator.SetSessionIdleTimeout(config, OptionalInt(options, "minutes", 30));
+                        break;
 
-                case "add-credential":
-                    ConfigMutator.AddCredential(
-                        config,
-                        Required(options, "alias"),
-                        Required(options, "user"),
-                        Optional(options, "label") ?? Required(options, "alias"));
-                    break;
+                    case "add-credential":
+                        ConfigMutator.AddCredential(
+                            config,
+                            Required(options, "alias"),
+                            Required(options, "user"),
+                            Optional(options, "label") ?? Required(options, "alias"));
+                        break;
 
-                case "add-ssh-target":
-                    ConfigMutator.AddSshTarget(
-                        config,
-                        Required(options, "id"),
-                        Required(options, "host"),
-                        OptionalInt(options, "port", 22),
-                        Required(options, "user"),
-                        ParseSshAuthMode(Optional(options, "auth") ?? "password"),
-                        Optional(options, "credential") ?? "",
-                        Optional(options, "key-path"));
-                    break;
+                    case "add-ssh-target":
+                        ConfigMutator.AddSshTarget(
+                            config,
+                            Required(options, "id"),
+                            Required(options, "host"),
+                            OptionalInt(options, "port", 22),
+                            Required(options, "user"),
+                            ParseSshAuthMode(Optional(options, "auth") ?? "password"),
+                            Optional(options, "credential") ?? "",
+                            Optional(options, "key-path"));
+                        break;
 
-                case "add-route":
-                    ConfigMutator.AddRoute(
-                        config,
-                        Required(options, "id"),
-                        Required(options, "chain").Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries));
-                    break;
+                    case "add-route":
+                        ConfigMutator.AddRoute(
+                            config,
+                            Required(options, "id"),
+                            Required(options, "chain").Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries));
+                        break;
 
-                case "add-db-target":
-                    ConfigMutator.AddDbTarget(
-                        config,
-                        Required(options, "id"),
-                        ParseDbEngine(Required(options, "engine")),
-                        Required(options, "host"),
-                        OptionalInt(options, "port", DefaultDbPort(Required(options, "engine"))),
-                        Required(options, "database"),
-                        Required(options, "user"),
-                        Required(options, "credential"),
-                        Optional(options, "route"),
-                        OptionalInt(options, "max-rows", 100));
-                    break;
+                    case "add-db-target":
+                        ConfigMutator.AddDbTarget(
+                            config,
+                            Required(options, "id"),
+                            ParseDbEngine(Required(options, "engine")),
+                            Required(options, "host"),
+                            OptionalInt(options, "port", DefaultDbPort(Required(options, "engine"))),
+                            Required(options, "database"),
+                            Required(options, "user"),
+                            Required(options, "credential"),
+                            Optional(options, "route"),
+                            OptionalInt(options, "max-rows", 100));
+                        break;
 
-                case "add-browser-target":
-                    ConfigMutator.AddBrowserTarget(
-                        config,
-                        Required(options, "id"),
-                        Required(options, "url"),
-                        Required(options, "user"),
-                        Required(options, "credential"),
-                        ParseBrowserIsolationMode(Optional(options, "isolation") ?? "managed-profile"),
-                        Optional(options, "user-selector") ?? "",
-                        Optional(options, "password-selector") ?? "",
-                        Optional(options, "submit-selector") ?? "",
-                        Optional(options, "success-selector"),
-                        Optional(options, "success-url-contains"),
-                        Optional(options, "failure-selector"),
-                        OptionalInt(options, "timeout-seconds", 30));
-                    break;
+                    case "add-browser-target":
+                        ConfigMutator.AddBrowserTarget(
+                            config,
+                            Required(options, "id"),
+                            Required(options, "url"),
+                            Required(options, "user"),
+                            Required(options, "credential"),
+                            ParseBrowserIsolationMode(Optional(options, "isolation") ?? "managed-profile"),
+                            Optional(options, "user-selector") ?? "",
+                            Optional(options, "password-selector") ?? "",
+                            Optional(options, "submit-selector") ?? "",
+                            Optional(options, "success-selector"),
+                            Optional(options, "success-url-contains"),
+                            Optional(options, "failure-selector"),
+                            OptionalInt(options, "timeout-seconds", 30));
+                        break;
 
-                case "add-ssh-policy":
-                    ConfigMutator.AddSshPolicy(
-                        config,
-                        Required(options, "id"),
-                        SplitCsv(Required(options, "routes")),
-                        SplitCsv(Required(options, "prefixes")),
-                        OptionalBool(options, "allow-shell-operators", false),
-                        ParsePermission(Optional(options, "min-permission") ?? "limited"));
-                    break;
+                    case "add-ssh-policy":
+                        ConfigMutator.AddSshPolicy(
+                            config,
+                            Required(options, "id"),
+                            SplitCsv(Required(options, "routes")),
+                            SplitCsv(Required(options, "prefixes")),
+                            OptionalBool(options, "allow-shell-operators", false),
+                            ParsePermission(Optional(options, "min-permission") ?? "limited"));
+                        break;
 
-                case "add-db-policy":
-                    ConfigMutator.AddDbPolicy(
-                        config,
-                        Required(options, "id"),
-                        SplitCsv(Required(options, "connections")),
-                        OptionalBool(options, "allow-write-sql", false),
-                        ParsePermission(Optional(options, "min-permission") ?? "limited"));
-                    break;
+                    case "add-db-policy":
+                        ConfigMutator.AddDbPolicy(
+                            config,
+                            Required(options, "id"),
+                            SplitCsv(Required(options, "connections")),
+                            OptionalBool(options, "allow-write-sql", false),
+                            ParsePermission(Optional(options, "min-permission") ?? "limited"));
+                        break;
 
-                case "add-browser-policy":
-                    ConfigMutator.AddBrowserPolicy(
-                        config,
-                        Required(options, "id"),
-                        SplitCsv(Required(options, "targets")),
-                        ParsePermission(Optional(options, "min-permission") ?? "limited"));
-                    break;
-            }
+                    case "add-browser-policy":
+                        ConfigMutator.AddBrowserPolicy(
+                            config,
+                            Required(options, "id"),
+                            SplitCsv(Required(options, "targets")),
+                            ParsePermission(Optional(options, "min-permission") ?? "limited"));
+                        break;
+                }
 
-            var errors = AppConfigValidator.Validate(config);
-            if (errors.Count > 0)
-            {
-                WriteJson(new { ok = false, code = "invalid_config", errors = ConfigErrorSanitizer.Sanitize(errors) });
-                return 2;
-            }
-
-            AppConfigStore.Save(configPath, config);
+                var errors = AppConfigValidator.Validate(config);
+                if (errors.Count > 0)
+                {
+                    throw new InvalidConfigMutationException(errors);
+                }
+            });
             WriteJson(new { ok = true, config_path = configPath });
             return 0;
+        }
+        catch (InvalidConfigMutationException ex)
+        {
+            WriteJson(new { ok = false, code = "invalid_config", errors = ConfigErrorSanitizer.Sanitize(ex.Errors) });
+            return 2;
         }
         catch (Exception ex)
         {
@@ -578,6 +583,11 @@ internal static class AppHost
             WriteJson(new { ok = false, code = safeError.Code, safe_message = safeError.Message });
             return 2;
         }
+    }
+
+    private sealed class InvalidConfigMutationException(IReadOnlyList<string> errors) : Exception("Config mutation produced an invalid config.")
+    {
+        public IReadOnlyList<string> Errors { get; } = errors;
     }
 
     private static Dictionary<string, string> ParseOptions(string[] args)

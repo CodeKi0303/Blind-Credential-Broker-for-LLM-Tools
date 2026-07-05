@@ -38,4 +38,45 @@ public sealed class AppConfigStoreTests
             }
         }
     }
+
+    [Fact]
+    public async Task ConcurrentUpdatesPreserveAllChanges()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "llm-pw-manager-tests", Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(directory, "config.json");
+        try
+        {
+            AppConfigStore.WriteSample(path, overwrite: true);
+            using var start = new ManualResetEventSlim(false);
+            var tasks = Enumerable.Range(1, 40)
+                .Select(index => Task.Run(() =>
+                {
+                    start.Wait();
+                    AppConfigStore.Update(path, config =>
+                    {
+                        ConfigMutator.AddCredential(config, $"race-{index}", $"user{index}", $"Race {index}");
+                        AppConfigValidator.ThrowIfInvalid(config);
+                    });
+                }))
+                .ToArray();
+
+            start.Set();
+            await Task.WhenAll(tasks);
+
+            var config = AppConfigStore.LoadOrCreate(path);
+
+            Assert.Equal(40, config.Credentials.Count(credential => credential.Alias.StartsWith("race-", StringComparison.Ordinal)));
+            for (var index = 1; index <= 40; index++)
+            {
+                Assert.Contains(config.Credentials, credential => credential.Alias == $"race-{index}");
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
 }

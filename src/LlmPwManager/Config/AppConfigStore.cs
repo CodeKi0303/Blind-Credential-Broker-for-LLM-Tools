@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using LlmPwManager.IO;
 
 namespace LlmPwManager.Config;
 
@@ -18,10 +19,55 @@ internal static class AppConfigStore
 
     public static AppConfig LoadOrCreate(string path)
     {
+        using var fileLock = CrossProcessFileLock.Acquire(path);
+        return LoadOrCreateUnlocked(path);
+    }
+
+    public static void WriteSample(string path, bool overwrite)
+    {
+        using var fileLock = CrossProcessFileLock.Acquire(path);
+        if (File.Exists(path) && !overwrite)
+        {
+            throw new InvalidOperationException($"Config already exists: {path}. Use --force to overwrite.");
+        }
+
+        WriteAtomicUnlocked(path, CreateSample());
+    }
+
+    public static void Save(string path, AppConfig config)
+    {
+        using var fileLock = CrossProcessFileLock.Acquire(path);
+        WriteAtomicUnlocked(path, config);
+    }
+
+    public static AppConfig Update(string path, Action<AppConfig> update)
+    {
+        using var fileLock = CrossProcessFileLock.Acquire(path);
+        var config = LoadOrCreateUnlocked(path);
+        update(config);
+        WriteAtomicUnlocked(path, config);
+        return config;
+    }
+
+    public static void CopyInto(AppConfig destination, AppConfig source)
+    {
+        destination.DefaultClientProfile = source.DefaultClientProfile;
+        destination.SessionIdleTimeoutMinutes = source.SessionIdleTimeoutMinutes;
+        destination.ClientProfiles = source.ClientProfiles;
+        destination.Credentials = source.Credentials;
+        destination.SshTargets = source.SshTargets;
+        destination.Routes = source.Routes;
+        destination.DbTargets = source.DbTargets;
+        destination.BrowserTargets = source.BrowserTargets;
+        destination.Policies = source.Policies;
+    }
+
+    private static AppConfig LoadOrCreateUnlocked(string path)
+    {
         if (!File.Exists(path))
         {
             var config = CreateSample();
-            File.WriteAllText(path, JsonSerializer.Serialize(config, Options));
+            WriteAtomicUnlocked(path, config);
             return config;
         }
 
@@ -29,21 +75,22 @@ internal static class AppConfigStore
         return JsonSerializer.Deserialize<AppConfig>(text, Options) ?? new AppConfig();
     }
 
-    public static void WriteSample(string path, bool overwrite)
+    private static void WriteAtomicUnlocked(string path, AppConfig config)
     {
-        if (File.Exists(path) && !overwrite)
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var tempPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
         {
-            throw new InvalidOperationException($"Config already exists: {path}. Use --force to overwrite.");
+            File.WriteAllText(tempPath, JsonSerializer.Serialize(config, Options));
+            File.Move(tempPath, path, overwrite: true);
         }
-
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path, JsonSerializer.Serialize(CreateSample(), Options));
-    }
-
-    public static void Save(string path, AppConfig config)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path, JsonSerializer.Serialize(config, Options));
+        finally
+        {
+            if (File.Exists(tempPath))
+            {
+                File.Delete(tempPath);
+            }
+        }
     }
 
     private static AppConfig CreateSample() => new()

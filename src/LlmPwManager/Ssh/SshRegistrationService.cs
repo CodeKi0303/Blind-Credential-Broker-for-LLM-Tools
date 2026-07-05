@@ -21,78 +21,55 @@ internal sealed class SshRegistrationService(
             return new SshRegistrationResult("already_configured", request.RouteId, request.RouteId, $"{request.RouteId}-password", false);
         }
 
+        var latestConfig = AppConfigStore.LoadOrCreate(configPath);
+        if (latestConfig.Routes.Any(route => route.Id.Equals(request.RouteId, StringComparison.OrdinalIgnoreCase)))
+        {
+            AppConfigStore.CopyInto(config, latestConfig);
+            return new SshRegistrationResult("already_configured", request.RouteId, request.RouteId, $"{request.RouteId}-password", false);
+        }
+
         var targetId = request.RouteId;
         var credentialAlias = $"{request.RouteId}-password";
         var policyId = $"{request.RouteId}-ssh-policy";
 
-        var addedCredential = false;
-        var addedTarget = false;
-        var addedRoute = false;
-        var addedPolicy = false;
-        var credentialStored = false;
+        await credentials.ResolveAsync(
+            credentialAlias,
+            $"SSH password for {request.UserName}@{request.Host}:{request.Port}",
+            request.UserName,
+            candidate => TestDirectSshAsync(request.Host, request.Port, request.UserName, candidate),
+            cancellationToken);
 
-        try
+        var status = "registered";
+        var saved = AppConfigStore.Update(configPath, latest =>
         {
-            ConfigMutator.AddCredential(config, credentialAlias, request.UserName, $"SSH password for {request.UserName}@{request.Host}");
-            addedCredential = true;
-            ConfigMutator.AddSshTarget(config, targetId, request.Host, request.Port, request.UserName, SshAuthMode.Password, credentialAlias, null);
-            addedTarget = true;
-            ConfigMutator.AddRoute(config, request.RouteId, [targetId]);
-            addedRoute = true;
+            if (latest.Routes.Any(route => route.Id.Equals(request.RouteId, StringComparison.OrdinalIgnoreCase)))
+            {
+                status = "already_configured";
+                return;
+            }
+
+            AddRegistration(latest);
+            AppConfigValidator.ThrowIfInvalid(latest);
+        });
+        AppConfigStore.CopyInto(config, saved);
+        return new SshRegistrationResult(status, request.RouteId, targetId, credentialAlias, true);
+
+        void AddRegistration(AppConfig targetConfig)
+        {
+            ConfigMutator.AddCredential(targetConfig, credentialAlias, request.UserName, $"SSH password for {request.UserName}@{request.Host}");
+            ConfigMutator.AddSshTarget(targetConfig, targetId, request.Host, request.Port, request.UserName, SshAuthMode.Password, credentialAlias, null);
+            ConfigMutator.AddRoute(targetConfig, request.RouteId, [targetId]);
 
             if (request.CommandPrefixes.Count > 0)
             {
                 ConfigMutator.AddSshPolicy(
-                    config,
+                    targetConfig,
                     policyId,
                     [request.RouteId],
                     request.CommandPrefixes,
                     allowShellOperators: false,
                     PermissionProfile.Limited);
-                addedPolicy = true;
             }
-
-            AppConfigValidator.ThrowIfInvalid(config);
-
-            await credentials.ResolveAsync(
-                credentialAlias,
-                $"SSH password for {request.UserName}@{request.Host}:{request.Port}",
-                request.UserName,
-                candidate => TestDirectSshAsync(request.Host, request.Port, request.UserName, candidate),
-                cancellationToken);
-            credentialStored = true;
-
-            AppConfigStore.Save(configPath, config);
-            return new SshRegistrationResult("registered", request.RouteId, targetId, credentialAlias, true);
-        }
-        catch
-        {
-            if (addedPolicy)
-            {
-                config.Policies.RemoveAll(policy => policy.Id.Equals(policyId, StringComparison.OrdinalIgnoreCase));
-            }
-
-            if (addedRoute)
-            {
-                config.Routes.RemoveAll(route => route.Id.Equals(request.RouteId, StringComparison.OrdinalIgnoreCase));
-            }
-
-            if (addedTarget)
-            {
-                config.SshTargets.RemoveAll(target => target.Id.Equals(targetId, StringComparison.OrdinalIgnoreCase));
-            }
-
-            if (addedCredential)
-            {
-                config.Credentials.RemoveAll(credential => credential.Alias.Equals(credentialAlias, StringComparison.OrdinalIgnoreCase));
-            }
-
-            if (credentialStored)
-            {
-                credentials.Forget(credentialAlias);
-            }
-
-            throw;
         }
     }
 
