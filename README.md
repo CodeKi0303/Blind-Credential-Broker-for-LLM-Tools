@@ -414,6 +414,12 @@ password prompts in connection order:
 Only the local prompt sees the password text. The LLM sees route IDs, DB target
 IDs, redacted results, and `secret_visible_to_model: false`.
 
+Intermediate SSH servers must allow TCP forwarding. For OpenSSH this means
+`AllowTcpForwarding yes` in the sshd config used by the running server. If
+forwarding is disabled on an intermediate hop, single-hop SSH can still work,
+but nested SSH and DB-over-SSH routes will fail or time out because the broker
+cannot open the tunnel to the next hop.
+
 Example non-secret setup:
 
 ```powershell
