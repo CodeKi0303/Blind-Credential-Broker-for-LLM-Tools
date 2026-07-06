@@ -137,8 +137,44 @@ public sealed class ToolRegistryMetadataAuthTests
         Assert.Equal(1, approval.Calls);
         Assert.Equal("prod.example.com", registration.Requests.Single().Host);
         Assert.Equal(2222, registration.Requests.Single().Port);
+        Assert.Equal("prod", registration.Requests.Single().TargetId);
+        Assert.Null(registration.Requests.Single().ViaRouteId);
         Assert.Contains("uptime", registration.Requests.Single().CommandPrefixes);
         Assert.DoesNotContain("super-secret", json);
+    }
+
+    [Fact]
+    public async Task SshRegisterCanDescribeNestedRouteRegistration()
+    {
+        var registration = new FakeSshRegistrationService();
+        var approval = new FakeApprovalPrompt(approve: true);
+        var tools = CreateRegistryWithStore(["ssh_register"], includeSshPolicy: true, approvalPrompt: approval, sshRegistration: registration).Tools;
+
+        var result = await tools.CallAsync(JsonDocument.Parse("""
+            {
+              "name": "ssh_register",
+              "arguments": {
+                "route_id": "bastion-to-app",
+                "target_id": "app",
+                "via_route_id": "prod",
+                "host": "10.0.0.12",
+                "port": 22,
+                "user_name": "deploy",
+                "purpose": "register inner app host through bastion",
+                "client_profile": "restricted"
+              }
+            }
+            """).RootElement, CancellationToken.None);
+
+        var payload = ReadToolText(result);
+
+        Assert.Equal("registered", payload.GetProperty("status").GetString());
+        Assert.Equal("bastion-to-app", payload.GetProperty("route_id").GetString());
+        Assert.Equal("app", payload.GetProperty("target_id").GetString());
+        Assert.Equal("prod", payload.GetProperty("via_route_id").GetString());
+        Assert.Equal(1, approval.Calls);
+        Assert.Equal("prod", registration.Requests.Single().ViaRouteId);
+        Assert.Equal("app", registration.Requests.Single().TargetId);
     }
 
     [Fact]
@@ -788,10 +824,10 @@ public sealed class ToolRegistryMetadataAuthTests
     {
         public List<SshRegistrationRequest> Requests { get; } = [];
 
-        public Task<SshRegistrationResult> RegisterDirectPasswordAsync(SshRegistrationRequest request, CancellationToken cancellationToken)
+        public Task<SshRegistrationResult> RegisterPasswordAsync(SshRegistrationRequest request, CancellationToken cancellationToken)
         {
             Requests.Add(request);
-            return Task.FromResult(new SshRegistrationResult("registered", request.RouteId, request.RouteId, $"{request.RouteId}-password", true));
+            return Task.FromResult(new SshRegistrationResult("registered", request.RouteId, request.TargetId, $"{request.RouteId}-password", true));
         }
     }
 

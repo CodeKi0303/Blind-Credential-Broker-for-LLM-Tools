@@ -359,6 +359,33 @@ This creates a direct SSH target, route, credential alias, and limited SSH
 policy for the supplied command prefixes. The LLM sees only the resulting route
 metadata; it never sees the password.
 
+For an SSH host that is only reachable through an existing route, pass
+`via_route_id`. The broker connects through the parent route, opens a temporary
+local forward to the new SSH host, prompts locally for the new SSH password,
+tests it, and then stores a new nested route only after the test succeeds:
+
+```json
+{
+  "name": "ssh_register",
+  "arguments": {
+    "route_id": "bastion-to-app-02",
+    "target_id": "app-02",
+    "via_route_id": "bastion",
+    "host": "10.20.0.12",
+    "port": 22,
+    "user_name": "deploy",
+    "purpose": "register the inner app host through the bastion route",
+    "command_prefixes": ["whoami", "hostname", "uptime"],
+    "client_profile": "limited"
+  }
+}
+```
+
+This produces a route chain equivalent to `bastion -> app-02`. For
+`outer -> inner -> db`, register the outer route first, register the inner route
+with `via_route_id` pointing at the outer route, then call `db_register` with
+`route_id` set to the nested route.
+
 For a DB reachable through that SSH route:
 
 ```powershell
@@ -391,8 +418,8 @@ test succeeds:
 ```
 
 If `route_id` is set, that SSH route must already be registered. For a DB on a
-new private network path, register the SSH route first with `ssh_register`, then
-call `db_register`.
+new private network path, register the SSH route first with `ssh_register`,
+including `via_route_id` for nested SSH paths, then call `db_register`.
 
 ### Nested SSH To DB Example
 
@@ -697,6 +724,12 @@ Create a client-specific profile:
 MCP server processes are locked to one client profile through `LLM_PW_MANAGER_CLIENT_PROFILE`. If that environment variable is omitted, the server is locked to `defaultClientProfile`; the generated sample config starts with `limited` as the default. `mcp-config --profile <id>` validates that the profile exists before emitting client configuration. MCP clients may omit `client_profile`, or pass the same locked profile for compatibility. If a model tries to pass a different profile such as `full`, the broker denies the call before policy evaluation. CLI commands still accept `--profile` because they are local user commands rather than model-controlled MCP calls; unknown CLI profiles are denied as `unknown_client_profile` without echoing the provided profile string.
 
 `tools/list` is profile-scoped, so an MCP client only sees tools allowed by the locked client profile. MCP metadata tools such as `credential_status`, `config_summary`, and `audit_tail` also respect the profile's allowed tool list. They never return secret values. `config_summary` is profile-scoped: non-full MCP clients see the minimal summary described above, while `full` clients can see detailed management metadata.
+
+Existing configs created before the onboarding tools existed are migrated on
+load for the built-in `full` and `limited` profiles. The migration adds the
+current default MCP tools, including `ssh_register`, `db_register`,
+`browser_register`, SSH session tools, `policy_check`, `forget_credential`, and
+`audit_tail`. Custom profiles are left unchanged.
 
 For SSH, non-full policy rules that allow `ssh_run` must define `commandPrefixes`. Limited policy rules reject shell operators such as `;`, `&&`, `|`, redirects, backticks, and command substitution unless a rule explicitly sets `allowShellOperators` to `true`. This prevents a safe-looking prefix such as `df -h` from becoming `df -h; destructive-command`.
 

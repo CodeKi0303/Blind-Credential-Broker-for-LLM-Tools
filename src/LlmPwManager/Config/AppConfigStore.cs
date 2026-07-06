@@ -66,13 +66,51 @@ internal static class AppConfigStore
     {
         if (!File.Exists(path))
         {
-            var config = CreateSample();
-            WriteAtomicUnlocked(path, config);
-            return config;
+            var sample = CreateSample();
+            WriteAtomicUnlocked(path, sample);
+            return sample;
         }
 
         var text = File.ReadAllText(path);
-        return JsonSerializer.Deserialize<AppConfig>(text, Options) ?? new AppConfig();
+        var config = JsonSerializer.Deserialize<AppConfig>(text, Options) ?? new AppConfig();
+        if (ApplyMigrations(config))
+        {
+            WriteAtomicUnlocked(path, config);
+        }
+
+        return config;
+    }
+
+    private static bool ApplyMigrations(AppConfig config)
+    {
+        var changed = false;
+        foreach (var profile in config.ClientProfiles)
+        {
+            if (profile.Id.Equals("full", StringComparison.OrdinalIgnoreCase) ||
+                profile.Id.Equals("limited", StringComparison.OrdinalIgnoreCase))
+            {
+                changed |= AddMissingTools(profile, DefaultMcpTools);
+            }
+        }
+
+        return changed;
+    }
+
+    private static bool AddMissingTools(ClientProfile profile, IReadOnlyList<string> tools)
+    {
+        var changed = false;
+        foreach (var tool in tools)
+        {
+            if (profile.AllowedTools.Contains(tool, StringComparer.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            profile.AllowedTools.Add(tool);
+            changed = true;
+        }
+
+        return changed;
     }
 
     private static void WriteAtomicUnlocked(string path, AppConfig config)
@@ -98,8 +136,8 @@ internal static class AppConfigStore
         DefaultClientProfile = "limited",
         ClientProfiles =
         [
-            new() { Id = "full", Permission = PermissionProfile.Full, AllowedTools = ["ssh_run", "ssh_register", "ssh_open_session", "session_list", "session_close", "db_query", "db_register", "browser_login", "browser_register", "route_test", "policy_check", "credential_status", "forget_credential", "config_summary", "audit_tail"] },
-            new() { Id = "limited", Permission = PermissionProfile.Limited, AllowedTools = ["ssh_run", "ssh_register", "ssh_open_session", "session_list", "session_close", "db_query", "db_register", "browser_login", "browser_register", "route_test", "policy_check", "credential_status", "forget_credential", "config_summary", "audit_tail"] }
+            new() { Id = "full", Permission = PermissionProfile.Full, AllowedTools = [.. DefaultMcpTools] },
+            new() { Id = "limited", Permission = PermissionProfile.Limited, AllowedTools = [.. DefaultMcpTools] }
         ],
         Credentials =
         [
@@ -171,4 +209,23 @@ internal static class AppConfigStore
             }
         ]
     };
+
+    private static readonly string[] DefaultMcpTools =
+    [
+        "ssh_run",
+        "ssh_register",
+        "ssh_open_session",
+        "session_list",
+        "session_close",
+        "db_query",
+        "db_register",
+        "browser_login",
+        "browser_register",
+        "route_test",
+        "policy_check",
+        "credential_status",
+        "forget_credential",
+        "config_summary",
+        "audit_tail"
+    ];
 }

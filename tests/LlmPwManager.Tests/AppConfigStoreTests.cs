@@ -79,4 +79,59 @@ public sealed class AppConfigStoreTests
             }
         }
     }
+
+    [Fact]
+    public void LoadMigratesDefaultProfilesToCurrentMcpToolSet()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "llm-pw-manager-tests", Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(directory, "config.json");
+        try
+        {
+            AppConfigStore.Save(path, new AppConfig
+            {
+                DefaultClientProfile = "limited",
+                ClientProfiles =
+                [
+                    new()
+                    {
+                        Id = "full",
+                        Permission = PermissionProfile.Full,
+                        AllowedTools = ["ssh_run", "db_query", "route_test", "credential_status", "config_summary"]
+                    },
+                    new()
+                    {
+                        Id = "limited",
+                        Permission = PermissionProfile.Limited,
+                        AllowedTools = ["ssh_run", "db_query", "route_test", "credential_status", "config_summary"]
+                    },
+                    new()
+                    {
+                        Id = "custom-readonly",
+                        Permission = PermissionProfile.Limited,
+                        AllowedTools = ["config_summary"]
+                    }
+                ]
+            });
+
+            var config = AppConfigStore.LoadOrCreate(path);
+
+            var full = config.ClientProfiles.Single(profile => profile.Id == "full");
+            var limited = config.ClientProfiles.Single(profile => profile.Id == "limited");
+            var custom = config.ClientProfiles.Single(profile => profile.Id == "custom-readonly");
+
+            Assert.Contains("ssh_register", full.AllowedTools);
+            Assert.Contains("db_register", full.AllowedTools);
+            Assert.Contains("browser_register", full.AllowedTools);
+            Assert.Contains("ssh_open_session", limited.AllowedTools);
+            Assert.Contains("audit_tail", limited.AllowedTools);
+            Assert.DoesNotContain("ssh_register", custom.AllowedTools);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
 }

@@ -97,7 +97,7 @@ internal static class AppHost
         var db = new DbExecutor(config, router, resolver, ssh, redactor);
         var browser = new ManagedEdgeBrowserLoginExecutor(config, resolver, appDirectory);
         var summary = new ConfigSummary(config, credentialStore);
-        var sshRegistration = new SshRegistrationService(config, configPath, resolver);
+        var sshRegistration = new SshRegistrationService(config, configPath, resolver, ssh);
         var dbRegistration = new DbRegistrationService(config, configPath, db, resolver);
         var browserRegistration = new BrowserRegistrationService(config, configPath, browser, resolver);
 

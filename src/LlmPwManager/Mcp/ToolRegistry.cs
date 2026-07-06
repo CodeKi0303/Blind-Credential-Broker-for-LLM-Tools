@@ -54,13 +54,15 @@ internal sealed class ToolRegistry(
         new
         {
             name = "ssh_register",
-            description = "Use this when an SSH host or route is not registered yet. It asks the local user to approve registration, creates non-secret config for a direct SSH target, prompts locally for the SSH password, tests it, and never exposes the password to the model.",
+            description = "Use this when an SSH host or route is not registered yet. It asks the local user to approve registration, creates non-secret config for a direct or SSH-routed target, prompts locally for the SSH password, tests it, and never exposes the password to the model.",
             inputSchema = new
             {
                 type = "object",
                 properties = new
                 {
                     route_id = StringProperty("New route id and SSH target id to register. Use a short stable id such as prod-bastion."),
+                    target_id = StringProperty("Optional SSH target id to create. Defaults to route_id. Use this when route_id describes a chain such as bastion-to-app but the final target should be app."),
+                    via_route_id = StringProperty("Optional existing SSH route id to reach this new SSH host. Use this for SSH->SSH paths, such as registering an inner host through an already registered bastion route."),
                     host = StringProperty("SSH host name or IP address to register. Do not include a password or URI userinfo."),
                     port = PortProperty("SSH TCP port. Defaults to 22 when omitted."),
                     user_name = StringProperty("SSH login user name for the target."),
@@ -425,6 +427,8 @@ internal sealed class ToolRegistry(
     private async Task<object> SshRegisterAsync(JsonElement args, CancellationToken cancellationToken)
     {
         var routeId = ReadString(args, "route_id");
+        var targetId = ReadOptionalString(args, "target_id") ?? routeId;
+        var viaRouteId = ReadOptionalString(args, "via_route_id");
         var host = ReadString(args, "host");
         var port = ReadInt(args, "port", 22);
         var userName = ReadString(args, "user_name");
@@ -447,9 +451,11 @@ internal sealed class ToolRegistry(
         if (string.IsNullOrWhiteSpace(routeId) ||
             string.IsNullOrWhiteSpace(host) ||
             string.IsNullOrWhiteSpace(userName) ||
-            !ConfigIdentifier.IsValid(routeId))
+            !ConfigIdentifier.IsValid(routeId) ||
+            string.IsNullOrWhiteSpace(targetId) ||
+            !ConfigIdentifier.IsValid(targetId))
         {
-            return ToolError("invalid_request", new { safe_message = "SSH registration requires a valid route_id, host, and user_name." });
+            return ToolError("invalid_request", new { safe_message = "SSH registration requires a valid route_id, target_id, host, and user_name." });
         }
 
         if (port is < 1 or > 65535)
@@ -457,7 +463,26 @@ internal sealed class ToolRegistry(
             return ToolError("invalid_request", new { safe_message = "SSH port must be between 1 and 65535." });
         }
 
-        var target = $"{userName}@{host}:{port}";
+        if (!string.IsNullOrWhiteSpace(viaRouteId) && !IsConfiguredRoute(viaRouteId))
+        {
+            return ToolError("ssh_route_not_registered", new
+            {
+                safe_message = "The requested parent SSH route is not registered. Register that route first with ssh_register, then retry nested ssh_register.",
+                suggested_tool = "ssh_register",
+                needs_user_registration = true,
+                secret_visible_to_model = false
+            });
+        }
+
+        if (!string.IsNullOrWhiteSpace(viaRouteId) &&
+            viaRouteId.Equals(routeId, StringComparison.OrdinalIgnoreCase))
+        {
+            return ToolError("invalid_request", new { safe_message = "SSH registration cannot use the new route_id as its own via_route_id." });
+        }
+
+        var target = string.IsNullOrWhiteSpace(viaRouteId)
+            ? $"{userName}@{host}:{port}"
+            : $"{viaRouteId} -> {userName}@{host}:{port}";
         var approved = approval.Approve(
             "SSH target registration required",
             target,
@@ -469,8 +494,8 @@ internal sealed class ToolRegistry(
             return ToolError("user_denied", new { safe_message = "The local user denied SSH target registration." });
         }
 
-        var result = await sshRegistration.RegisterDirectPasswordAsync(
-            new SshRegistrationRequest(routeId, host, port, userName, purpose, commandPrefixes, clientProfile),
+        var result = await sshRegistration.RegisterPasswordAsync(
+            new SshRegistrationRequest(routeId, targetId, host, port, userName, viaRouteId, purpose, commandPrefixes, clientProfile),
             cancellationToken);
 
         audit.Record("ssh_register", clientProfile, result.RouteId, "register SSH target", result.Status);
@@ -479,6 +504,7 @@ internal sealed class ToolRegistry(
             status = result.Status,
             route_id = result.RouteId,
             target_id = result.TargetId,
+            via_route_id = viaRouteId,
             credential_alias = result.CredentialAlias,
             prompt_shown = result.PromptShown,
             secret_visible_to_model = false
