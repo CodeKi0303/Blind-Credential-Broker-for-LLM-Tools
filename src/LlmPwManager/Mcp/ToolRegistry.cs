@@ -36,17 +36,17 @@ internal sealed class ToolRegistry(
         new
         {
             name = "ssh_run",
-            description = "Run an approved command over a configured SSH route without exposing credentials.",
+            description = "Use this instead of raw ssh when the user asks to run a command on a configured SSH route or reusable SSH session. The broker resolves SSH passwords or key passphrases locally, enforces policy, redacts secrets from stdout/stderr, and never exposes credentials to the model.",
             inputSchema = new
             {
                 type = "object",
                 properties = new
                 {
-                    route_id = new { type = "string" },
-                    session_id = new { type = "string" },
-                    command = new { type = "string" },
-                    purpose = new { type = "string" },
-                    client_profile = new { type = "string" }
+                    route_id = StringProperty("Configured SSH route id to use when no session_id is supplied. Get available route ids from config_summary."),
+                    session_id = StringProperty("Opaque SSH session id previously returned by ssh_open_session. Use this for multi-step work over the same route."),
+                    command = StringProperty("Shell command to run on the final SSH hop. The command is still checked against broker policy before execution."),
+                    purpose = PurposeProperty("Why this SSH command is needed for the user's request."),
+                    client_profile = ClientProfileProperty()
                 },
                 required = new[] { "command", "purpose" }
             }
@@ -54,23 +54,24 @@ internal sealed class ToolRegistry(
         new
         {
             name = "ssh_register",
-            description = "Ask the local user to approve and register a direct SSH target, then prompt for the SSH password and test it without exposing the password to the model.",
+            description = "Use this when an SSH host or route is not registered yet. It asks the local user to approve registration, creates non-secret config for a direct SSH target, prompts locally for the SSH password, tests it, and never exposes the password to the model.",
             inputSchema = new
             {
                 type = "object",
                 properties = new
                 {
-                    route_id = new { type = "string" },
-                    host = new { type = "string" },
-                    port = new { type = "integer", minimum = 1, maximum = 65535 },
-                    user_name = new { type = "string" },
-                    purpose = new { type = "string" },
+                    route_id = StringProperty("New route id and SSH target id to register. Use a short stable id such as prod-bastion."),
+                    host = StringProperty("SSH host name or IP address to register. Do not include a password or URI userinfo."),
+                    port = PortProperty("SSH TCP port. Defaults to 22 when omitted."),
+                    user_name = StringProperty("SSH login user name for the target."),
+                    purpose = PurposeProperty("Why this new SSH target should be registered."),
                     command_prefixes = new
                     {
                         type = "array",
+                        description = "Optional safe command prefixes to allow for this route, such as whoami, hostname, uptime, or systemctl status.",
                         items = new { type = "string" }
                     },
-                    client_profile = new { type = "string" }
+                    client_profile = ClientProfileProperty()
                 },
                 required = new[] { "route_id", "host", "user_name", "purpose" }
             }
@@ -78,15 +79,15 @@ internal sealed class ToolRegistry(
         new
         {
             name = "ssh_open_session",
-            description = "Open a reusable SSH route session and return an opaque session_id. Secrets remain isolated in the manager process.",
+            description = "Use this for multi-step SSH or DB work over the same configured route. It opens a broker-held SSH connection and returns an opaque session_id; credentials remain isolated inside the broker process.",
             inputSchema = new
             {
                 type = "object",
                 properties = new
                 {
-                    route_id = new { type = "string" },
-                    purpose = new { type = "string" },
-                    client_profile = new { type = "string" }
+                    route_id = StringProperty("Configured SSH route id to keep open. Get available route ids from config_summary."),
+                    purpose = PurposeProperty("Why a reusable SSH session is needed for the user's request."),
+                    client_profile = ClientProfileProperty()
                 },
                 required = new[] { "route_id", "purpose" }
             }
@@ -94,27 +95,27 @@ internal sealed class ToolRegistry(
         new
         {
             name = "session_list",
-            description = "List active broker-managed sessions without exposing credentials.",
+            description = "Use this to inspect active broker-managed SSH sessions for the current client profile. It returns session metadata only and never exposes credentials.",
             inputSchema = new
             {
                 type = "object",
                 properties = new
                 {
-                    client_profile = new { type = "string" }
+                    client_profile = ClientProfileProperty()
                 }
             }
         },
         new
         {
             name = "session_close",
-            description = "Close an active broker-managed session by opaque session_id.",
+            description = "Use this to close an active broker-managed SSH session when multi-step work is finished or the user asks to stop using it.",
             inputSchema = new
             {
                 type = "object",
                 properties = new
                 {
-                    session_id = new { type = "string" },
-                    client_profile = new { type = "string" }
+                    session_id = StringProperty("Opaque session id returned by ssh_open_session."),
+                    client_profile = ClientProfileProperty()
                 },
                 required = new[] { "session_id" }
             }
@@ -122,15 +123,15 @@ internal sealed class ToolRegistry(
         new
         {
             name = "browser_login",
-            description = "Open a configured isolated browser login target and fill credentials without exposing the password to the model.",
+            description = "Use this instead of asking for a browser password when the user wants to log in to a configured browser target. The broker opens an isolated Edge profile, fills only configured selectors, verifies login locally, and never exposes the password, cookies, or page secrets to the model.",
             inputSchema = new
             {
                 type = "object",
                 properties = new
                 {
-                    target_id = new { type = "string" },
-                    purpose = new { type = "string" },
-                    client_profile = new { type = "string" }
+                    target_id = StringProperty("Configured browser login target id. Get available browser target ids from config_summary."),
+                    purpose = PurposeProperty("Why this browser login is needed for the user's request."),
+                    client_profile = ClientProfileProperty()
                 },
                 required = new[] { "target_id", "purpose" }
             }
@@ -138,24 +139,24 @@ internal sealed class ToolRegistry(
         new
         {
             name = "browser_register",
-            description = "Ask the local user to approve and register a browser login target, then prompt for the password and verify login without exposing the password to the model.",
+            description = "Use this when a browser login target is not registered yet. It asks the local user to approve registration, stores non-secret selector config, prompts locally for the password, verifies login, and never exposes the password to the model.",
             inputSchema = new
             {
                 type = "object",
                 properties = new
                 {
-                    target_id = new { type = "string" },
-                    login_url = new { type = "string" },
-                    user_name = new { type = "string" },
-                    user_name_selector = new { type = "string" },
-                    password_selector = new { type = "string" },
-                    submit_selector = new { type = "string" },
-                    success_selector = new { type = "string" },
-                    success_url_contains = new { type = "string" },
-                    failure_selector = new { type = "string" },
-                    login_timeout_seconds = new { type = "integer", minimum = 5 },
-                    purpose = new { type = "string" },
-                    client_profile = new { type = "string" }
+                    target_id = StringProperty("New browser login target id to register."),
+                    login_url = StringProperty("Login page URL to open in the broker-managed isolated Edge profile."),
+                    user_name = StringProperty("Login user name or email to fill into the configured user selector."),
+                    user_name_selector = StringProperty("CSS selector for the username input. Do not include secret values."),
+                    password_selector = StringProperty("CSS selector for the password input. The password value is provided only by the local prompt."),
+                    submit_selector = StringProperty("CSS selector for the login submit button."),
+                    success_selector = StringProperty("Optional CSS selector that indicates login success."),
+                    success_url_contains = StringProperty("Optional URL substring that indicates login success."),
+                    failure_selector = StringProperty("Optional CSS selector that indicates login failure."),
+                    login_timeout_seconds = PositiveIntegerProperty("Seconds to wait for login fields and success/failure checks. Minimum is 5.", minimum: 5),
+                    purpose = PurposeProperty("Why this browser target should be registered."),
+                    client_profile = ClientProfileProperty()
                 },
                 required = new[] { "target_id", "login_url", "user_name", "user_name_selector", "password_selector", "submit_selector", "purpose" }
             }
@@ -163,18 +164,18 @@ internal sealed class ToolRegistry(
         new
         {
             name = "db_query",
-            description = "Run an approved SQL query through a configured DB connection and optional SSH route or SSH session.",
+            description = "Use this instead of raw psql/mysql when the user asks to query a configured database, including databases behind SSH routes or reusable SSH sessions. The broker resolves DB and SSH credentials locally, enforces SQL policy, redacts secret-like result values, and never exposes passwords or connection strings to the model.",
             inputSchema = new
             {
                 type = "object",
                 properties = new
                 {
-                    connection_id = new { type = "string" },
-                    session_id = new { type = "string" },
-                    sql = new { type = "string" },
-                    @params = new { type = "object", additionalProperties = true },
-                    purpose = new { type = "string" },
-                    client_profile = new { type = "string" }
+                    connection_id = StringProperty("Configured DB connection id. Get available DB target ids from config_summary."),
+                    session_id = StringProperty("Optional opaque SSH session id from ssh_open_session when reusing an already-open route."),
+                    sql = StringProperty("SQL query to run. The broker checks whether write SQL is allowed by policy before execution."),
+                    @params = ObjectProperty("Optional SQL parameters keyed by parameter name, without passwords or connection strings."),
+                    purpose = PurposeProperty("Why this DB query is needed for the user's request."),
+                    client_profile = ClientProfileProperty()
                 },
                 required = new[] { "connection_id", "sql", "purpose" }
             }
@@ -182,23 +183,23 @@ internal sealed class ToolRegistry(
         new
         {
             name = "db_register",
-            description = "Ask the local user to approve and register a DB target, then prompt for the DB password and test the connection without exposing the password to the model.",
+            description = "Use this when a DB connection is not registered yet. It asks the local user to approve registration, stores non-secret DB metadata, prompts locally for the DB password, tests the connection, and never exposes the password or connection string to the model.",
             inputSchema = new
             {
                 type = "object",
                 properties = new
                 {
-                    connection_id = new { type = "string" },
-                    engine = new { type = "string", @enum = new[] { "postgres", "mysql" } },
-                    host = new { type = "string" },
-                    port = new { type = "integer", minimum = 1, maximum = 65535 },
-                    database = new { type = "string" },
-                    user_name = new { type = "string" },
-                    route_id = new { type = "string" },
-                    max_rows = new { type = "integer", minimum = 1 },
-                    allow_write_sql = new { type = "boolean" },
-                    purpose = new { type = "string" },
-                    client_profile = new { type = "string" }
+                    connection_id = StringProperty("New DB connection id to register."),
+                    engine = new { type = "string", description = "Database engine for this connection.", @enum = new[] { "postgres", "mysql" } },
+                    host = StringProperty("DB host name or IP as seen from the selected route. For DB on the inner SSH host, this is often 127.0.0.1."),
+                    port = PortProperty("DB TCP port. Defaults to the engine port when omitted."),
+                    database = StringProperty("Database/schema name."),
+                    user_name = StringProperty("DB login user name."),
+                    route_id = StringProperty("Optional configured SSH route id to reach this DB. Use for SSH->DB or SSH->SSH->DB paths."),
+                    max_rows = PositiveIntegerProperty("Maximum rows to return before truncation.", minimum: 1),
+                    allow_write_sql = BooleanProperty("Whether policy should allow write SQL for this DB target. Prefer false for read-only tasks."),
+                    purpose = PurposeProperty("Why this DB connection should be registered."),
+                    client_profile = ClientProfileProperty()
                 },
                 required = new[] { "connection_id", "engine", "host", "database", "user_name", "purpose" }
             }
@@ -206,14 +207,14 @@ internal sealed class ToolRegistry(
         new
         {
             name = "route_test",
-            description = "Test a configured SSH route without returning credentials.",
+            description = "Use this before ssh_run or db_query when SSH connectivity is uncertain. It tests a configured SSH route, including nested hops, without returning credentials.",
             inputSchema = new
             {
                 type = "object",
                 properties = new
                 {
-                    route_id = new { type = "string" },
-                    client_profile = new { type = "string" }
+                    route_id = StringProperty("Configured SSH route id to test. Get available route ids from config_summary."),
+                    client_profile = ClientProfileProperty()
                 },
                 required = new[] { "route_id" }
             }
@@ -221,19 +222,19 @@ internal sealed class ToolRegistry(
         new
         {
             name = "policy_check",
-            description = "Check whether a tool request would be allowed, denied, or require approval without executing it or prompting the user.",
+            description = "Use this to decide whether a proposed SSH command, DB query, route, or browser action would be allowed before executing it. It never opens credential prompts, never performs the action, and never exposes secrets.",
             inputSchema = new
             {
                 type = "object",
                 properties = new
                 {
-                    tool_name = new { type = "string" },
-                    route_id = new { type = "string" },
-                    connection_id = new { type = "string" },
-                    target_id = new { type = "string" },
-                    command = new { type = "string" },
-                    sql = new { type = "string" },
-                    client_profile = new { type = "string" }
+                    tool_name = StringProperty("Tool name to check, such as ssh_run, db_query, route_test, or browser_login."),
+                    route_id = StringProperty("Optional SSH route id for SSH-related policy checks."),
+                    connection_id = StringProperty("Optional DB connection id for DB policy checks."),
+                    target_id = StringProperty("Optional browser target id for browser policy checks."),
+                    command = StringProperty("Optional SSH command to check against command-prefix policy."),
+                    sql = StringProperty("Optional SQL text to check against read/write policy."),
+                    client_profile = ClientProfileProperty()
                 },
                 required = new[] { "tool_name" }
             }
@@ -241,14 +242,14 @@ internal sealed class ToolRegistry(
         new
         {
             name = "credential_status",
-            description = "Return whether a configured credential alias is registered. Unknown aliases are not queried. The secret value is never returned.",
+            description = "Use this before asking the user about credentials. It reports whether a configured credential alias is present in the local credential store. Unknown aliases are not queried, and the secret value is never returned.",
             inputSchema = new
             {
                 type = "object",
                 properties = new
                 {
-                    alias = new { type = "string" },
-                    client_profile = new { type = "string" }
+                    alias = StringProperty("Configured credential alias to check. Get aliases or counts from config_summary when allowed by the profile."),
+                    client_profile = ClientProfileProperty()
                 },
                 required = new[] { "alias" }
             }
@@ -256,14 +257,14 @@ internal sealed class ToolRegistry(
         new
         {
             name = "forget_credential",
-            description = "Delete a stored configured credential by alias so the next operation prompts the user again. Unknown aliases are not deleted. The secret value is never returned.",
+            description = "Use this only when the user asks to clear a stored credential or force the next operation to prompt locally again. It deletes a configured credential alias from the local credential store; unknown aliases are not deleted and secrets are never returned.",
             inputSchema = new
             {
                 type = "object",
                 properties = new
                 {
-                    alias = new { type = "string" },
-                    client_profile = new { type = "string" }
+                    alias = StringProperty("Configured credential alias to delete from the local credential store."),
+                    client_profile = ClientProfileProperty()
                 },
                 required = new[] { "alias" }
             }
@@ -271,27 +272,27 @@ internal sealed class ToolRegistry(
         new
         {
             name = "config_summary",
-            description = "Return configured client profiles, routes, targets, and credential registration status without exposing secrets.",
+            description = "Use this first when the user asks what SSH routes, DB targets, browser targets, credential aliases, or broker permissions are configured. It returns a profile-scoped, secret-free summary and helps choose route_id, connection_id, target_id, and credential aliases for later tool calls.",
             inputSchema = new
             {
                 type = "object",
                 properties = new
                 {
-                    client_profile = new { type = "string" }
+                    client_profile = ClientProfileProperty()
                 }
             }
         },
         new
         {
             name = "audit_tail",
-            description = "Return recent secret-free audit log entries for allowed client profiles.",
+            description = "Use this when the user asks what broker actions recently happened. It returns recent secret-free audit log entries for allowed client profiles.",
             inputSchema = new
             {
                 type = "object",
                 properties = new
                 {
-                    limit = new { type = "integer", minimum = 1, maximum = 500 },
-                    client_profile = new { type = "string" }
+                    limit = RangedIntegerProperty("Maximum number of recent audit entries to return.", minimum: 1, maximum: 500),
+                    client_profile = ClientProfileProperty()
                 }
             }
         }
@@ -301,6 +302,53 @@ internal sealed class ToolRegistry(
             .Where(tool => IsToolAllowedForProfile(ToolName(tool), mcpClientProfile))
             .ToList();
     }
+
+    private static object StringProperty(string description) => new
+    {
+        type = "string",
+        description
+    };
+
+    private static object PurposeProperty(string description) => StringProperty(description);
+
+    private static object ClientProfileProperty() => StringProperty(
+        "Optional broker client profile. MCP servers are locked to LLM_PW_MANAGER_CLIENT_PROFILE, so omit this unless the client passes the same locked profile for compatibility.");
+
+    private static object PortProperty(string description) => new
+    {
+        type = "integer",
+        description,
+        minimum = 1,
+        maximum = 65535
+    };
+
+    private static object PositiveIntegerProperty(string description, int minimum) => new
+    {
+        type = "integer",
+        description,
+        minimum
+    };
+
+    private static object RangedIntegerProperty(string description, int minimum, int maximum) => new
+    {
+        type = "integer",
+        description,
+        minimum,
+        maximum
+    };
+
+    private static object BooleanProperty(string description) => new
+    {
+        type = "boolean",
+        description
+    };
+
+    private static object ObjectProperty(string description) => new
+    {
+        type = "object",
+        description,
+        additionalProperties = true
+    };
 
     public async Task<object> CallAsync(JsonElement parameters, CancellationToken cancellationToken)
     {
