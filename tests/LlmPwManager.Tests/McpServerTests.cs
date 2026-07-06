@@ -51,6 +51,90 @@ public sealed class McpServerTests
     }
 
     [Fact]
+    public async Task InitializeIncludesClientGuidanceAndMetadataCapabilities()
+    {
+        var response = await SendAsync("""
+            {"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0.0.0"}}}
+            """);
+
+        var result = response.GetProperty("result");
+
+        Assert.Equal("2025-06-18", result.GetProperty("protocolVersion").GetString());
+        Assert.Equal("llm-pw-manager", result.GetProperty("serverInfo").GetProperty("name").GetString());
+        Assert.True(result.GetProperty("capabilities").TryGetProperty("tools", out _));
+        Assert.True(result.GetProperty("capabilities").TryGetProperty("resources", out _));
+        Assert.True(result.GetProperty("capabilities").TryGetProperty("prompts", out _));
+        Assert.Contains("Never ask the user to reveal passwords in chat", result.GetProperty("instructions").GetString());
+    }
+
+    [Fact]
+    public async Task LfOnlyHeadersAreAccepted()
+    {
+        var json = """
+            {"jsonrpc":"2.0","id":8,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"lf-test","version":"0.0.0"}}}
+            """;
+        var input = new MemoryStream(Frame(json, "\n"));
+        var output = new MemoryStream();
+        var server = new McpServer(null!);
+
+        await server.RunAsync(input, output, CancellationToken.None);
+
+        var response = ReadResponse(output);
+        Assert.Equal(8, response.GetProperty("id").GetInt32());
+        Assert.Equal("llm-pw-manager", response.GetProperty("result").GetProperty("serverInfo").GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public async Task NewlineDelimitedInitializeUsesNewlineDelimitedResponse()
+    {
+        var json = """
+            {"jsonrpc":"2.0","id":9,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"newline-test","version":"0.0.0"}}}
+            """;
+        var input = new MemoryStream(Line(json));
+        var output = new MemoryStream();
+        var server = new McpServer(null!);
+
+        await server.RunAsync(input, output, CancellationToken.None);
+
+        var response = ReadLineResponse(output);
+        Assert.Equal(9, response.GetProperty("id").GetInt32());
+        Assert.Equal("llm-pw-manager", response.GetProperty("result").GetProperty("serverInfo").GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public async Task InitializedNotificationIsIgnoredBeforeNextRequest()
+    {
+        var input = new MemoryStream(
+            Line("""{"jsonrpc":"2.0","method":"notifications/initialized"}""")
+                .Concat(Line("""{"jsonrpc":"2.0","id":10,"method":"tools/list"}"""))
+                .ToArray());
+        var output = new MemoryStream();
+        var server = new McpServer(CreateRegistry());
+
+        await server.RunAsync(input, output, CancellationToken.None);
+
+        var response = ReadLineResponse(output);
+        Assert.Equal(10, response.GetProperty("id").GetInt32());
+        Assert.Equal(JsonValueKind.Array, response.GetProperty("result").GetProperty("tools").ValueKind);
+    }
+
+    [Theory]
+    [InlineData("resources/list", "resources")]
+    [InlineData("resources/templates/list", "resourceTemplates")]
+    [InlineData("prompts/list", "prompts")]
+    public async Task EmptyMetadataListsAreSupported(string method, string propertyName)
+    {
+        var response = await SendAsync($$"""
+            {"jsonrpc":"2.0","id":7,"method":"{{method}}"}
+            """);
+
+        var items = response.GetProperty("result").GetProperty(propertyName);
+
+        Assert.Equal(JsonValueKind.Array, items.ValueKind);
+        Assert.Equal(0, items.GetArrayLength());
+    }
+
+    [Fact]
     public async Task ToolListInternalExceptionReturnsGenericJsonRpcError()
     {
         var response = await SendAsync("""
@@ -113,9 +197,19 @@ public sealed class McpServerTests
 
     private static byte[] Frame(string json)
     {
+        return Frame(json, "\r\n");
+    }
+
+    private static byte[] Frame(string json, string newline)
+    {
         var payload = Encoding.UTF8.GetBytes(json);
-        var header = Encoding.ASCII.GetBytes($"Content-Length: {payload.Length}\r\n\r\n");
+        var header = Encoding.ASCII.GetBytes($"Content-Length: {payload.Length}{newline}{newline}");
         return header.Concat(payload).ToArray();
+    }
+
+    private static byte[] Line(string json)
+    {
+        return Encoding.UTF8.GetBytes(json.Replace("\r", "").Replace("\n", "") + "\n");
     }
 
     private static JsonElement ReadResponse(MemoryStream output)
@@ -134,6 +228,14 @@ public sealed class McpServerTests
 
         Assert.True(bodyStart >= 0, "Missing MCP response body separator.");
         using var document = JsonDocument.Parse(bytes.AsMemory(bodyStart));
+        return document.RootElement.Clone();
+    }
+
+    private static JsonElement ReadLineResponse(MemoryStream output)
+    {
+        var text = Encoding.UTF8.GetString(output.ToArray()).TrimEnd('\r', '\n');
+        Assert.DoesNotContain("Content-Length:", text);
+        using var document = JsonDocument.Parse(text);
         return document.RootElement.Clone();
     }
 
