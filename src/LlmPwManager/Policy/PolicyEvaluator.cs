@@ -38,7 +38,7 @@ internal sealed class PolicyEvaluator(AppConfig config)
                 continue;
             }
 
-            if (toolName == "ssh_run" && rule.CommandPrefixes.Count > 0)
+            if (IsSshCommandTool(toolName) && rule.CommandPrefixes.Count > 0)
             {
                 if (!rule.AllowShellOperators && ShellCommandSafety.ContainsShellOperator(request.Command))
                 {
@@ -50,7 +50,7 @@ internal sealed class PolicyEvaluator(AppConfig config)
                     continue;
                 }
             }
-            else if (toolName == "ssh_run" && !rule.AllowShellOperators && ShellCommandSafety.ContainsShellOperator(request.Command))
+            else if (IsSshCommandTool(toolName) && !rule.AllowShellOperators && ShellCommandSafety.ContainsShellOperator(request.Command))
             {
                 return PolicyDecision.Deny("shell operators are not allowed by policy");
             }
@@ -75,6 +75,8 @@ internal sealed class PolicyEvaluator(AppConfig config)
         return values.Count == 0 ||
             (actual is not null && values.Contains(actual, StringComparer.OrdinalIgnoreCase));
     }
+
+    private static bool IsSshCommandTool(string toolName) => toolName is "ssh_run" or "ssh_sudo_run";
 
     private static int Rank(PermissionProfile profile) => profile switch
     {

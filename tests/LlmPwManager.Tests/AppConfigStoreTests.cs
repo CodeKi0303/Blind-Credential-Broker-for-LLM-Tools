@@ -21,6 +21,7 @@ public sealed class AppConfigStoreTests
             Assert.All(config.ClientProfiles, profile =>
             {
                 Assert.Contains("ssh_open_session", profile.AllowedTools);
+                Assert.Contains("ssh_sudo_run", profile.AllowedTools);
                 Assert.Contains("ssh_register", profile.AllowedTools);
                 Assert.Contains("session_list", profile.AllowedTools);
                 Assert.Contains("session_close", profile.AllowedTools);
@@ -120,6 +121,7 @@ public sealed class AppConfigStoreTests
             var custom = config.ClientProfiles.Single(profile => profile.Id == "custom-readonly");
 
             Assert.Contains("ssh_register", full.AllowedTools);
+            Assert.Contains("ssh_sudo_run", full.AllowedTools);
             Assert.Contains("db_register", full.AllowedTools);
             Assert.Contains("browser_register", full.AllowedTools);
             Assert.Contains("ssh_open_session", limited.AllowedTools);

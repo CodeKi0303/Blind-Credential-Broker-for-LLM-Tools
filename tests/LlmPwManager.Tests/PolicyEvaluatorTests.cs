@@ -21,6 +21,21 @@ public sealed class PolicyEvaluatorTests
     }
 
     [Fact]
+    public void LimitedProfileAllowsMatchingReadOnlySudoCommand()
+    {
+        var evaluator = new PolicyEvaluator(CreateConfig());
+
+        var decision = evaluator.Evaluate(new ToolRequest(
+            "ssh_sudo_run",
+            "limited",
+            RouteId: "prod-web",
+            Command: "systemctl status nginx"));
+
+        Assert.True(decision.Allowed);
+        Assert.False(decision.NeedsApproval);
+    }
+
+    [Fact]
     public void ToolNameAndAllowedToolsAreCaseInsensitive()
     {
         var config = CreateConfig();
@@ -78,6 +93,23 @@ public sealed class PolicyEvaluatorTests
     }
 
     [Fact]
+    public void LimitedProfileDeniesSudoCommandWithoutPolicy()
+    {
+        var config = CreateConfig();
+        config.Policies.RemoveAll(policy => policy.Tools.Contains("ssh_sudo_run"));
+        var evaluator = new PolicyEvaluator(config);
+
+        var decision = evaluator.Evaluate(new ToolRequest(
+            "ssh_sudo_run",
+            "limited",
+            RouteId: "prod-web",
+            Command: "systemctl status nginx"));
+
+        Assert.False(decision.Allowed);
+        Assert.Equal("no matching policy rule", decision.Reason);
+    }
+
+    [Fact]
     public void LimitedProfileDeniesShellChainingEvenWhenPrefixMatches()
     {
         var evaluator = new PolicyEvaluator(CreateConfig());
@@ -87,6 +119,21 @@ public sealed class PolicyEvaluatorTests
             "limited",
             RouteId: "prod-web",
             Command: "df -h; rm -rf /tmp/example"));
+
+        Assert.False(decision.Allowed);
+        Assert.Equal("shell operators are not allowed by policy", decision.Reason);
+    }
+
+    [Fact]
+    public void LimitedProfileDeniesSudoShellChainingEvenWhenPrefixMatches()
+    {
+        var evaluator = new PolicyEvaluator(CreateConfig());
+
+        var decision = evaluator.Evaluate(new ToolRequest(
+            "ssh_sudo_run",
+            "limited",
+            RouteId: "prod-web",
+            Command: "systemctl status nginx; cat /etc/shadow"));
 
         Assert.False(decision.Allowed);
         Assert.Equal("shell operators are not allowed by policy", decision.Reason);
@@ -189,8 +236,8 @@ public sealed class PolicyEvaluatorTests
         DefaultClientProfile = "limited",
         ClientProfiles =
         [
-            new() { Id = "limited", Permission = PermissionProfile.Limited, AllowedTools = ["ssh_run", "db_query", "browser_login"] },
-            new() { Id = "approval", Permission = PermissionProfile.Approval, AllowedTools = ["ssh_run", "db_query", "browser_login"] }
+            new() { Id = "limited", Permission = PermissionProfile.Limited, AllowedTools = ["ssh_run", "ssh_sudo_run", "db_query", "browser_login"] },
+            new() { Id = "approval", Permission = PermissionProfile.Approval, AllowedTools = ["ssh_run", "ssh_sudo_run", "db_query", "browser_login"] }
         ],
         Policies =
         [
@@ -200,6 +247,14 @@ public sealed class PolicyEvaluatorTests
                 Tools = ["ssh_run"],
                 RouteIds = ["prod-web"],
                 CommandPrefixes = ["systemctl status", "df", "uptime"],
+                MinPermission = PermissionProfile.Limited
+            },
+            new()
+            {
+                Id = "safe-sudo-ssh",
+                Tools = ["ssh_sudo_run"],
+                RouteIds = ["prod-web"],
+                CommandPrefixes = ["systemctl status", "journalctl", "cat ", "head ", "tail ", "ls "],
                 MinPermission = PermissionProfile.Limited
             },
             new()

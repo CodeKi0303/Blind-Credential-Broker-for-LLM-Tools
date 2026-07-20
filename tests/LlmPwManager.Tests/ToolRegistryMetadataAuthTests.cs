@@ -49,16 +49,29 @@ public sealed class ToolRegistryMetadataAuthTests
     [Fact]
     public void ListToolsIncludesLLMUsageGuidanceInDescriptions()
     {
-        var tools = CreateRegistry(["config_summary", "credential_status", "ssh_run", "db_query", "route_test"]);
+        var tools = CreateRegistry(["config_summary", "credential_status", "ssh_run", "ssh_sudo_run", "db_query", "route_test"]);
 
         var json = JsonSerializer.Serialize(tools.ListTools(), new JsonSerializerOptions(JsonSerializerDefaults.Web));
 
         Assert.Contains("Use this first when the user asks what SSH routes", json);
         Assert.Contains("Use this instead of raw ssh", json);
+        Assert.Contains("Use this instead of asking for a sudo password", json);
         Assert.Contains("Use this instead of raw psql/mysql", json);
         Assert.Contains("Use this before asking the user about credentials", json);
         Assert.Contains("Get available route ids from config_summary", json);
         Assert.Contains("Why this SSH command is needed", json);
+    }
+
+    [Fact]
+    public void DefaultSudoCredentialAliasUsesLeafTargetAndSshUser()
+    {
+        var alias = ToolRegistry.BuildDefaultSudoCredentialAlias(new SshTarget
+        {
+            Id = "app-02",
+            UserName = "deploy"
+        });
+
+        Assert.Equal("app-02-deploy-sudo-password", alias);
     }
 
     [Fact]
@@ -502,6 +515,77 @@ public sealed class ToolRegistryMetadataAuthTests
 
         Assert.Contains("session_not_found", json);
         Assert.DoesNotContain("super-secret", json);
+    }
+
+    [Fact]
+    public async Task MissingSudoSessionErrorsDoNotEchoRequestedSessionId()
+    {
+        using var sessions = CreateEmptySessionManager();
+        var tools = CreateRegistryWithStore(["ssh_sudo_run"], sshSessions: sessions).Tools;
+
+        var result = await tools.CallAsync(JsonDocument.Parse("""
+            {
+              "name": "ssh_sudo_run",
+              "arguments": {
+                "session_id": "password=super-secret",
+                "command": "whoami",
+                "purpose": "check root user",
+                "client_profile": "restricted"
+              }
+            }
+            """).RootElement, CancellationToken.None);
+
+        var json = JsonSerializer.Serialize(result, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.Contains("session_not_found", json);
+        Assert.DoesNotContain("super-secret", json);
+    }
+
+    [Fact]
+    public async Task UnknownSudoRouteSuggestsRegistrationWithoutEchoingRouteId()
+    {
+        var tools = CreateRegistryWithStore(["ssh_sudo_run"]).Tools;
+
+        var result = await tools.CallAsync(JsonDocument.Parse("""
+            {
+              "name": "ssh_sudo_run",
+              "arguments": {
+                "route_id": "password=super-secret",
+                "command": "whoami",
+                "purpose": "check root user",
+                "client_profile": "restricted"
+              }
+            }
+            """).RootElement, CancellationToken.None);
+
+        var json = JsonSerializer.Serialize(result, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.Contains("ssh_route_not_registered", json);
+        Assert.Contains("ssh_register", json);
+        Assert.DoesNotContain("super-secret", json);
+    }
+
+    [Fact]
+    public async Task SudoRunWithoutPolicyIsDeniedBeforeExecution()
+    {
+        var tools = CreateRegistryWithStore(["ssh_sudo_run"], includeSshPolicy: true).Tools;
+
+        var result = await tools.CallAsync(JsonDocument.Parse("""
+            {
+              "name": "ssh_sudo_run",
+              "arguments": {
+                "route_id": "prod",
+                "command": "whoami",
+                "purpose": "check root user",
+                "client_profile": "restricted"
+              }
+            }
+            """).RootElement, CancellationToken.None);
+
+        var json = JsonSerializer.Serialize(result, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.Contains("policy_denied", json);
+        Assert.Contains("no matching policy rule", json);
     }
 
     [Fact]

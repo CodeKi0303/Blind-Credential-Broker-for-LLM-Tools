@@ -53,6 +53,26 @@ internal sealed class ToolRegistry(
         },
         new
         {
+            name = "ssh_sudo_run",
+            description = "Use this instead of asking for a sudo password when the user needs a sudo command on a configured SSH route or reusable SSH session, including nested SSH routes. The broker prompts locally for the sudo password when needed, tests it with sudo -v, sends it only over SSH stdin, and never exposes it to the model.",
+            inputSchema = new
+            {
+                type = "object",
+                properties = new
+                {
+                    route_id = StringProperty("Configured SSH route id to use when no session_id is supplied. Nested routes run sudo on the final SSH hop."),
+                    session_id = StringProperty("Opaque SSH session id previously returned by ssh_open_session. Use this to run sudo on the session's final SSH hop."),
+                    command = StringProperty("Command to run with sudo on the final SSH hop. Do not include sudo; the broker wraps the command after policy checks."),
+                    sudo_user = StringProperty("Optional sudo target user. Defaults to root."),
+                    credential_alias = StringProperty("Optional sudo credential alias. Defaults to <leaf-target-id>-<ssh-user>-sudo-password."),
+                    purpose = PurposeProperty("Why this sudo command is needed for the user's request."),
+                    client_profile = ClientProfileProperty()
+                },
+                required = new[] { "command", "purpose" }
+            }
+        },
+        new
+        {
             name = "ssh_register",
             description = "Use this when an SSH host or route is not registered yet. It asks the local user to approve registration, creates non-secret config for a direct or SSH-routed target, prompts locally for the SSH password, tests it, and never exposes the password to the model.",
             inputSchema = new
@@ -364,6 +384,7 @@ internal sealed class ToolRegistry(
             return name switch
             {
                 "ssh_run" => await SshRunAsync(args, cancellationToken),
+                "ssh_sudo_run" => await SshSudoRunAsync(args, cancellationToken),
                 "ssh_register" => await SshRegisterAsync(args, cancellationToken),
                 "ssh_open_session" => await SshOpenSessionAsync(args, cancellationToken),
                 "session_list" => SessionList(args),
@@ -566,6 +587,84 @@ internal sealed class ToolRegistry(
         {
             route_id = routeId,
             session_id = sessionId,
+            exit_status = result.ExitStatus,
+            stdout = result.Stdout,
+            stderr = result.Stderr,
+            secret_visible_to_model = false
+        });
+    }
+
+    private async Task<object> SshSudoRunAsync(JsonElement args, CancellationToken cancellationToken)
+    {
+        var routeId = ReadOptionalString(args, "route_id");
+        var sessionId = ReadOptionalString(args, "session_id");
+        var command = ReadString(args, "command");
+        var sudoUser = ReadString(args, "sudo_user", "root");
+        var clientProfile = ReadClientProfile(args);
+        if (!IsToolAllowedForProfile("ssh_sudo_run", clientProfile))
+        {
+            audit.Record("ssh_sudo_run", clientProfile, "ssh", SafeAction(command), "denied", "tool is not allowed for this client profile");
+            return ToolError("policy_denied", new { reason = "tool is not allowed for this client profile", needsApproval = false });
+        }
+
+        if (!IsSafeSudoUser(sudoUser))
+        {
+            return ToolError("invalid_request", new { safe_message = "sudo_user may only contain letters, numbers, dot, underscore, or dash." });
+        }
+
+        SshSessionInfo? sessionInfo = null;
+        if (!string.IsNullOrWhiteSpace(sessionId))
+        {
+            if (!sshSessions.TryGetInfo(sessionId, clientProfile, out var foundSession))
+            {
+                audit.Record("ssh_sudo_run", clientProfile, "session", SafeAction(command), "denied", "SSH session was not found");
+                return ToolError("session_not_found");
+            }
+
+            sessionInfo = foundSession;
+            routeId = sessionInfo.RouteId;
+        }
+
+        if (string.IsNullOrWhiteSpace(routeId))
+        {
+            throw new InvalidOperationException("Missing required argument: route_id or session_id");
+        }
+
+        if (!IsConfiguredRoute(routeId))
+        {
+            audit.Record("ssh_sudo_run", clientProfile, "ssh", SafeAction(command), "denied", "SSH route is not registered");
+            return ToolError("ssh_route_not_registered", new
+            {
+                safe_message = "The requested SSH route is not registered. Ask the local user to approve ssh_register for this host before running sudo commands.",
+                suggested_tool = "ssh_register",
+                needs_user_registration = true,
+                secret_visible_to_model = false
+            });
+        }
+
+        var decision = policy.Evaluate(new ToolRequest("ssh_sudo_run", clientProfile, RouteId: routeId, Command: command));
+        if (!EnsureAllowed(decision, clientProfile, "SSH sudo command approval required", routeId, command))
+        {
+            audit.Record("ssh_sudo_run", clientProfile, routeId, SafeAction(command), "denied", decision.Reason);
+            return ToolError("policy_denied", new { decision.Reason, decision.NeedsApproval });
+        }
+
+        var credentialAlias = ReadOptionalString(args, "credential_alias") ??
+            BuildDefaultSudoCredentialAlias(GetLeafSshTarget(routeId));
+        var result = sessionInfo is null
+            ? await ssh.RunSudoCommandAsync(routeId, command, sudoUser, credentialAlias, cancellationToken)
+            : await sshSessions.UseConnectionAsync(
+                sessionInfo.SessionId,
+                clientProfile,
+                (route, token) => ssh.RunSudoCommandAsync(route, command, sudoUser, credentialAlias, token),
+                cancellationToken);
+
+        audit.Record("ssh_sudo_run", clientProfile, routeId, SafeAction(command), "ok");
+        return ToolText(new
+        {
+            route_id = routeId,
+            session_id = sessionInfo?.SessionId,
+            sudo_user = sudoUser,
             exit_status = result.ExitStatus,
             stdout = result.Stdout,
             stderr = result.Stderr,
@@ -1265,7 +1364,7 @@ internal sealed class ToolRegistry(
             return policy.Evaluate(BuildPolicyRequest(args, "route_test", clientProfile));
         }
 
-        if (requestedTool is "ssh_run" or "route_test" or "db_query" or "browser_login")
+        if (requestedTool is "ssh_run" or "ssh_sudo_run" or "route_test" or "db_query" or "browser_login")
         {
             return policy.Evaluate(BuildPolicyRequest(args, requestedTool, clientProfile));
         }
@@ -1318,7 +1417,7 @@ internal sealed class ToolRegistry(
 
     private static bool IsKnownTool(string toolName)
     {
-        return toolName is "ssh_run" or "ssh_register" or "ssh_open_session" or "session_list" or "session_close" or
+        return toolName is "ssh_run" or "ssh_sudo_run" or "ssh_register" or "ssh_open_session" or "session_list" or "session_close" or
             "browser_login" or "browser_register" or "db_query" or "db_register" or "route_test" or "policy_check" or
             "credential_status" or "forget_credential" or "config_summary" or "audit_tail";
     }
@@ -1337,6 +1436,31 @@ internal sealed class ToolRegistry(
 
     private bool IsConfiguredBrowserTarget(string targetId) =>
         config.BrowserTargets.Any(target => target.Id.Equals(targetId, StringComparison.OrdinalIgnoreCase));
+
+    internal static string BuildDefaultSudoCredentialAlias(SshTarget target) =>
+        $"{target.Id}-{target.UserName}-sudo-password";
+
+    private SshTarget GetLeafSshTarget(string routeId)
+    {
+        var route = config.Routes.First(route => route.Id.Equals(routeId, StringComparison.OrdinalIgnoreCase));
+        var targetId = route.SshChain.LastOrDefault();
+        if (string.IsNullOrWhiteSpace(targetId))
+        {
+            throw new InvalidOperationException("SSH route has no leaf target.");
+        }
+
+        return config.SshTargets.First(target => target.Id.Equals(targetId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool IsSafeSudoUser(string sudoUser)
+    {
+        if (string.IsNullOrWhiteSpace(sudoUser))
+        {
+            return false;
+        }
+
+        return sudoUser.All(ch => char.IsLetterOrDigit(ch) || ch is '_' or '-' or '.');
+    }
 
     private bool EnsureAllowed(PolicyDecision decision, string clientProfile, string title, string target, string action)
     {

@@ -30,6 +30,46 @@ internal sealed class SshExecutor(
             redactor.Redact(cmd.Error, connection.Secrets)));
     }
 
+    public async Task<SshRunResult> RunSudoCommandAsync(
+        string routeId,
+        string command,
+        string sudoUser,
+        string credentialAlias,
+        CancellationToken cancellationToken)
+    {
+        using var connection = await ConnectRouteAsync(routeId, cancellationToken);
+        return await RunSudoCommandAsync(connection, command, sudoUser, credentialAlias, cancellationToken);
+    }
+
+    public async Task<SshRunResult> RunSudoCommandAsync(
+        RouteConnection connection,
+        string command,
+        string sudoUser,
+        string credentialAlias,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!IsSafeSudoUser(sudoUser))
+        {
+            throw new InvalidOperationException("Invalid sudo user.");
+        }
+
+        var sudoLabel = $"sudo password for {credentialAlias}";
+        if (await TestSudoAsync(connection, sudoUser, password: null, cancellationToken))
+        {
+            return await ExecuteSudoAsync(connection, command, sudoUser, password: null, cancellationToken);
+        }
+
+        var sudoSecret = await credentials.ResolveAsync(
+            credentialAlias,
+            sudoLabel,
+            sudoUser,
+            candidate => TestSudoPasswordAsync(connection, sudoUser, candidate, cancellationToken),
+            cancellationToken);
+
+        return await ExecuteSudoAsync(connection, command, sudoUser, sudoSecret, cancellationToken);
+    }
+
     public async Task<RouteConnection> ConnectRouteAsync(string routeId, CancellationToken cancellationToken)
     {
         var route = router.Resolve(routeId);
@@ -96,6 +136,84 @@ internal sealed class SshExecutor(
         {
             forward.Dispose();
         }
+    }
+
+    private async Task<CredentialTestResult> TestSudoPasswordAsync(
+        RouteConnection connection,
+        string sudoUser,
+        string password,
+        CancellationToken cancellationToken)
+    {
+        return await TestSudoAsync(connection, sudoUser, password, cancellationToken)
+            ? new CredentialTestResult(true)
+            : new CredentialTestResult(false, "sudo authentication failed.");
+    }
+
+    private static async Task<bool> TestSudoAsync(
+        RouteConnection connection,
+        string sudoUser,
+        string? password,
+        CancellationToken cancellationToken)
+    {
+        var sudoCommand = password is null
+            ? $"sudo -n -u {sudoUser} -v"
+            : $"sudo -S -p \"\" -u {sudoUser} -v";
+        var result = await ExecuteCommandWithOptionalInputAsync(connection.LeafClient, sudoCommand, password, cancellationToken);
+        return result.ExitStatus == 0;
+    }
+
+    private async Task<SshRunResult> ExecuteSudoAsync(
+        RouteConnection connection,
+        string command,
+        string sudoUser,
+        string? password,
+        CancellationToken cancellationToken)
+    {
+        var sudoCommand = password is null
+            ? $"sudo -n -u {sudoUser} -- sh -lc {QuoteShellArgument(command)}"
+            : $"sudo -S -p \"\" -u {sudoUser} -- sh -lc {QuoteShellArgument(command)}";
+        var result = await ExecuteCommandWithOptionalInputAsync(connection.LeafClient, sudoCommand, password, cancellationToken);
+        var secrets = string.IsNullOrEmpty(password)
+            ? connection.Secrets
+            : connection.Secrets.Concat([password]).ToList();
+        return new SshRunResult(
+            result.ExitStatus,
+            redactor.Redact(result.Stdout, secrets),
+            redactor.Redact(result.Stderr, secrets));
+    }
+
+    private static async Task<SshRunResult> ExecuteCommandWithOptionalInputAsync(
+        SshClient client,
+        string commandText,
+        string? inputLine,
+        CancellationToken cancellationToken)
+    {
+        using var command = client.CreateCommand(commandText);
+        var executeTask = command.ExecuteAsync(cancellationToken);
+        if (inputLine is not null)
+        {
+            await using var input = command.CreateInputStream();
+            var payload = System.Text.Encoding.UTF8.GetBytes(inputLine + "\n");
+            await input.WriteAsync(payload, cancellationToken);
+        }
+
+        await executeTask;
+        return new SshRunResult(command.ExitStatus ?? -1, command.Result, command.Error);
+    }
+
+    private static string QuoteShellArgument(string value)
+    {
+        return "'" + value.Replace("'", "'\"'\"'", StringComparison.Ordinal) + "'";
+    }
+
+    private static bool IsSafeSudoUser(string sudoUser)
+    {
+        if (string.IsNullOrWhiteSpace(sudoUser))
+        {
+            return false;
+        }
+
+        return sudoUser.All(ch => char.IsLetterOrDigit(ch) || ch is '_' or '-' or '.');
     }
 
     private SshEndpoint BuildEndpoint(SshTarget target, SshClient? previousClient, List<ForwardedPortLocal> forwards)

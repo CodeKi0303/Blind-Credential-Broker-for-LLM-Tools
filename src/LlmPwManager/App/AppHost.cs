@@ -466,7 +466,7 @@ internal static class AppHost
                             config,
                             Required(options, "id"),
                             ParsePermission(Optional(options, "permission") ?? "limited"),
-                            SplitCsv(Optional(options, "tools") ?? "ssh_run,ssh_register,ssh_open_session,session_list,session_close,db_query,db_register,browser_login,browser_register,route_test,policy_check,credential_status,forget_credential,config_summary,audit_tail"));
+                            SplitCsv(Optional(options, "tools") ?? "ssh_run,ssh_sudo_run,ssh_register,ssh_open_session,session_list,session_close,db_query,db_register,browser_login,browser_register,route_test,policy_check,credential_status,forget_credential,config_summary,audit_tail"));
                         break;
 
                     case "set-default-profile":
@@ -846,7 +846,7 @@ internal static class AppHost
             return policy.Evaluate(new ToolRequest("route_test", profile, RouteId: routeId));
         }
 
-        if (requestedTool is "ssh_run" or "route_test" or "db_query" or "browser_login")
+        if (requestedTool is "ssh_run" or "ssh_sudo_run" or "route_test" or "db_query" or "browser_login")
         {
             return policy.Evaluate(new ToolRequest(
                 requestedTool,
@@ -939,7 +939,7 @@ internal static class AppHost
 
     private static bool IsKnownTool(string toolName)
     {
-        return toolName is "ssh_run" or "ssh_register" or "ssh_open_session" or "session_list" or "session_close" or
+        return toolName is "ssh_run" or "ssh_sudo_run" or "ssh_register" or "ssh_open_session" or "session_list" or "session_close" or
             "browser_login" or "browser_register" or "db_query" or "db_register" or "route_test" or "policy_check" or
             "credential_status" or "forget_credential" or "config_summary" or "audit_tail";
     }

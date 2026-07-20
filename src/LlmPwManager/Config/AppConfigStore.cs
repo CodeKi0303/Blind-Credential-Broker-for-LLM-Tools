@@ -194,6 +194,14 @@ internal static class AppConfigStore
             },
             new()
             {
+                Id = "read-sudo-ssh",
+                Tools = ["ssh_sudo_run"],
+                RouteIds = ["bastion", "bastion-to-app-02"],
+                CommandPrefixes = ["whoami", "id", "hostname", "systemctl status", "journalctl", "cat ", "head ", "tail ", "ls "],
+                MinPermission = PermissionProfile.Limited
+            },
+            new()
+            {
                 Id = "read-db",
                 Tools = ["db_query"],
                 ConnectionIds = ["payments-db-via-bastion"],
@@ -213,6 +221,7 @@ internal static class AppConfigStore
     private static readonly string[] DefaultMcpTools =
     [
         "ssh_run",
+        "ssh_sudo_run",
         "ssh_register",
         "ssh_open_session",
         "session_list",

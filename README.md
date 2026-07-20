@@ -12,6 +12,7 @@ Windows-only local password broker for LLM tool calling. The broker lets an LLM 
 - Client permission profiles independent of any specific LLM vendor.
 - High-level MCP tools only:
   - `ssh_run`
+  - `ssh_sudo_run`
   - `ssh_register`
   - `ssh_open_session`
   - `session_list`
@@ -251,7 +252,8 @@ Agents that cannot use MCP can call the same broker through CLI commands. Output
 .\LlmPwManager.exe audit-tail --limit 20 --profile limited
 .\LlmPwManager.exe mcp-config --format mcpServers --profile limited
 .\LlmPwManager.exe policy-check --tool ssh_run --route prod-route --command "systemctl status nginx --no-pager" --profile limited
-.\LlmPwManager.exe add-client-profile --id claude-desktop --permission limited --tools "ssh_run,ssh_register,ssh_open_session,session_list,session_close,db_query,db_register,browser_login,browser_register,route_test,policy_check,credential_status,forget_credential,config_summary,audit_tail" --confirm-local-management true
+.\LlmPwManager.exe policy-check --tool ssh_sudo_run --route prod-route --command "systemctl status nginx --no-pager" --profile limited
+.\LlmPwManager.exe add-client-profile --id claude-desktop --permission limited --tools "ssh_run,ssh_sudo_run,ssh_register,ssh_open_session,session_list,session_close,db_query,db_register,browser_login,browser_register,route_test,policy_check,credential_status,forget_credential,config_summary,audit_tail" --confirm-local-management true
 .\LlmPwManager.exe set-default-profile --id claude-desktop --confirm-local-management true
 .\LlmPwManager.exe set-session-timeout --minutes 15 --confirm-local-management true
 .\LlmPwManager.exe add-credential --alias prod-deploy --user deploy --label "Prod deploy password" --confirm-local-management true
@@ -277,7 +279,7 @@ Broker-held SSH `session_id` values are still process-local. Codex, Claude, Anti
 
 `doctor` prints a secret-free readiness report. It validates config, reports credential aliases as `registered` or `missing`, checks limited-profile policy coverage for SSH/DB/browser targets, checks whether Microsoft Edge is available for managed browser targets, includes generated MCP stdio config, and shows config/audit paths.
 
-The `add-*` and `set-*` commands only write non-secret config. They register aliases, targets, routes, DB metadata, and policy rules, but never accept a password on the command line. Because these are local management operations, they require `--confirm-local-management true`; normal MCP tool calls cannot mutate config. The first `route-test`, `ssh-run`, `db-query`, or `browser-login` that needs a missing credential opens the native Windows prompt, tests the credential, and stores it through Windows Credential Manager.
+The `add-*` and `set-*` commands only write non-secret config. They register aliases, targets, routes, DB metadata, and policy rules, but never accept a password on the command line. Because these are local management operations, they require `--confirm-local-management true`; normal MCP tool calls cannot mutate config. The first `route-test`, `ssh-run`, `ssh_sudo_run`, `db-query`, or `browser-login` that needs a missing credential opens the native Windows prompt, tests the credential, and stores it through Windows Credential Manager.
 
 Config identifiers such as credential aliases, profile IDs, route IDs, target IDs, and policy IDs may contain only letters, numbers, `.`, `_`, and `-`, up to 128 characters. Labels and user names are separate fields and can be more descriptive.
 
@@ -385,6 +387,30 @@ This produces a route chain equivalent to `bastion -> app-02`. For
 `outer -> inner -> db`, register the outer route first, register the inner route
 with `via_route_id` pointing at the outer route, then call `db_register` with
 `route_id` set to the nested route.
+
+To run a sudo command on the final SSH hop, use `ssh_sudo_run` instead of
+putting `sudo` in an `ssh_run` command:
+
+```json
+{
+  "name": "ssh_sudo_run",
+  "arguments": {
+    "route_id": "bastion-to-app-02",
+    "command": "systemctl status nginx --no-pager",
+    "purpose": "check nginx status on the inner host",
+    "client_profile": "limited"
+  }
+}
+```
+
+The broker wraps the command with sudo on the leaf host of the route. For
+`outer -> inner -> sudo`, the sudo credential belongs to the `inner` SSH target
+and SSH user. If no explicit `credential_alias` is provided, the default alias
+is `<target_id>-<ssh_user>-sudo-password`. Missing or failed sudo credentials
+open the native Windows prompt, are tested with `sudo -v`, and are stored only
+after the test succeeds. `NOPASSWD` sudo rules are also accepted without storing
+a sudo password. The sudo password is sent only through the SSH channel stdin
+and is redacted from stdout, stderr, and audit output.
 
 For a DB reachable through that SSH route:
 
@@ -614,6 +640,25 @@ The broker still evaluates `ssh_run` policy for every command using the session 
 
 Reusable sessions are scoped to the `client_profile` that opened them. Other profiles cannot list, reuse, or close that session even if they learn the opaque `session_id`.
 
+The same session can run approved sudo commands on the session's leaf host:
+
+```json
+{
+  "name": "ssh_sudo_run",
+  "arguments": {
+    "session_id": "ssh_1f6d...",
+    "command": "whoami",
+    "purpose": "confirm sudo access on the inner host",
+    "client_profile": "limited"
+  }
+}
+```
+
+`ssh_sudo_run` evaluates its own policy rule, separate from `ssh_run`, for
+every command. Limited profiles should allow only read or observation prefixes
+such as `whoami`, `id`, `hostname`, `systemctl status`, `journalctl`, `cat `,
+`head `, `tail `, and `ls `.
+
 The same session can also be reused for a DB target configured with the same `routeId`:
 
 ```json
@@ -686,7 +731,7 @@ To rotate or repair a saved credential, forget it by alias:
 .\LlmPwManager.exe forget-credential bastion-deploy
 ```
 
-The command deletes the stored Windows Credential Manager entry but does not remove the non-secret alias from config. The next `route-test`, `ssh-run`, or `db-query` that needs that alias opens the native Windows prompt and stores the newly tested credential. MCP clients can call `forget_credential` when their client profile allows it.
+The command deletes the stored Windows Credential Manager entry but does not remove the non-secret alias from config. The next `route-test`, `ssh-run`, `ssh_sudo_run`, or `db-query` that needs that alias opens the native Windows prompt and stores the newly tested credential. MCP clients can call `forget_credential` when their client profile allows it.
 
 Credential status and forget operations are limited to credential aliases declared in config. Unknown aliases return `unknown` and do not query or delete Windows Credential Manager entries. MCP/CLI responses and audit records also avoid echoing unknown aliases, unknown tool names, and missing session IDs back to the model.
 
@@ -716,8 +761,8 @@ When an approval-profile client approves the exact same profile/target/action/re
 Create a client-specific profile:
 
 ```powershell
-.\LlmPwManager.exe add-client-profile --id claude-desktop --permission limited --tools "ssh_run,ssh_register,ssh_open_session,session_list,session_close,db_query,db_register,browser_login,browser_register,route_test,policy_check,credential_status,forget_credential,config_summary,audit_tail" --confirm-local-management true
-.\LlmPwManager.exe add-client-profile --id local-agent --permission approval --tools "ssh_run,ssh_register,ssh_open_session,session_list,session_close,db_query,db_register,browser_login,browser_register,route_test,policy_check,credential_status,forget_credential,config_summary,audit_tail" --confirm-local-management true
+.\LlmPwManager.exe add-client-profile --id claude-desktop --permission limited --tools "ssh_run,ssh_sudo_run,ssh_register,ssh_open_session,session_list,session_close,db_query,db_register,browser_login,browser_register,route_test,policy_check,credential_status,forget_credential,config_summary,audit_tail" --confirm-local-management true
+.\LlmPwManager.exe add-client-profile --id local-agent --permission approval --tools "ssh_run,ssh_sudo_run,ssh_register,ssh_open_session,session_list,session_close,db_query,db_register,browser_login,browser_register,route_test,policy_check,credential_status,forget_credential,config_summary,audit_tail" --confirm-local-management true
 .\LlmPwManager.exe set-default-profile --id claude-desktop --confirm-local-management true
 ```
 
@@ -728,10 +773,10 @@ MCP server processes are locked to one client profile through `LLM_PW_MANAGER_CL
 Existing configs created before the onboarding tools existed are migrated on
 load for the built-in `full` and `limited` profiles. The migration adds the
 current default MCP tools, including `ssh_register`, `db_register`,
-`browser_register`, SSH session tools, `policy_check`, `forget_credential`, and
-`audit_tail`. Custom profiles are left unchanged.
+`browser_register`, `ssh_sudo_run`, SSH session tools, `policy_check`,
+`forget_credential`, and `audit_tail`. Custom profiles are left unchanged.
 
-For SSH, non-full policy rules that allow `ssh_run` must define `commandPrefixes`. Limited policy rules reject shell operators such as `;`, `&&`, `|`, redirects, backticks, and command substitution unless a rule explicitly sets `allowShellOperators` to `true`. This prevents a safe-looking prefix such as `df -h` from becoming `df -h; destructive-command`.
+For SSH, non-full policy rules that allow `ssh_run` or `ssh_sudo_run` must define `commandPrefixes`. Limited policy rules reject shell operators such as `;`, `&&`, `|`, redirects, backticks, and command substitution unless a rule explicitly sets `allowShellOperators` to `true`. This prevents a safe-looking prefix such as `df -h` from becoming `df -h; destructive-command`. Sudo policies are separate from normal SSH policies, so granting `ssh_run` does not automatically grant `ssh_sudo_run`.
 
 For DB queries, limited read-only policy allows only one read-style statement. Multi-statement SQL and write keywords such as `insert`, `update`, `delete`, `drop`, and `truncate` are denied unless the policy explicitly allows write SQL.
 
